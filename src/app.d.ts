@@ -1,26 +1,31 @@
-// See https://svelte.dev/docs/kit/types#app.d.ts
-// for information about these interfaces
+// NOTE: Don't use `/// <reference types="@sveltejs/adapter-cloudflare" />` here.
+// The adapter's ambient.d.ts declares `env: unknown` which prevents overriding
+// via interface merging. Runtime types come from worker-configuration.d.ts
+// (included via tsconfig "types").
+
 declare global {
 	namespace App {
-        interface Platform {
-            env: Env
-            cf: CfProperties
-            ctx: ExecutionContext
-        }
-
-        interface Platform {
-			env: Env;
+		interface Platform {
+			env: {
+				DB: D1Database;
+				AUDIO_BUCKET: R2Bucket;
+				ASSETS: Fetcher;
+				PRIVATE_WORKOS_CLIENT_ID: string;
+				PRIVATE_WORKOS_API_KEY: string;
+				PRIVATE_WORKOS_ORG_ID: string;
+				PRIVATE_WORKOS_COOKIE_PASSWORD: string;
+			};
+			cf: IncomingRequestCfProperties;
 			ctx: ExecutionContext;
 			caches: CacheStorage;
-			cf?: IncomingRequestCfProperties;
 		}
-
-        // interface Error {}
-        // interface Locals {}
-        // interface PageData {}
-        // interface PageState {}
-        // interface Platform {}
-    }
+		// interface Error {}
+		interface Locals {
+			session: import('@vesta-cx/utils/auth').AuthSession | null;
+		}
+		// interface PageData {}
+		// interface PageState {}
+	}
 }
 
 export {};
