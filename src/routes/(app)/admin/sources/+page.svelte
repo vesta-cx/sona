@@ -99,15 +99,6 @@
 	const isComplete = (t: TrackEntry) => Boolean(t.title?.trim() && (t.licenseUrl?.trim() || sharedLicenseUrl?.trim()));
 	const allComplete = $derived(sharedLicenseUrl?.trim() && tracks.length > 0 && tracks.every(isComplete));
 
-	// Auto-hydrate license/stream URLs from existing sources when dialog opens
-	$effect(() => {
-		if (!showUploadDialog || data.sources.length === 0) return;
-		// Only fill when both are empty (fresh open)
-		if (sharedLicenseUrl.trim() || sharedStreamUrl.trim()) return;
-		const first = data.sources[0];
-		if (first?.licenseUrl) sharedLicenseUrl = first.licenseUrl;
-		if (first?.streamUrl != null) sharedStreamUrl = first.streamUrl;
-	});
 	const completeCount = $derived(tracks.filter(isComplete).length);
 	const incompleteCount = $derived(tracks.length - completeCount);
 
@@ -256,13 +247,43 @@
 
 	const UPLOAD_TOAST_ID = 'source-upload';
 
+	type UploadItem = {
+		file: File;
+		track: TrackEntry;
+		isFlac: boolean;
+	};
+
+	const buildUploadQueue = (): UploadItem[] => {
+		const queue: UploadItem[] = [];
+		for (const track of tracks) {
+			const effectiveLicense = track.licenseUrl?.trim() || sharedLicenseUrl?.trim();
+			const effectiveStream = track.streamUrl?.trim() || sharedStreamUrl?.trim();
+			if (!effectiveLicense || !track.title?.trim()) continue;
+
+			if (track.flacFile) {
+				queue.push({ file: track.flacFile, track, isFlac: true });
+			}
+			for (const file of track.files) {
+				if (file === track.flacFile) continue;
+				queue.push({ file, track, isFlac: false });
+			}
+		}
+		return queue;
+	};
+
 	const handleUploadSubmit = async (e: SubmitEvent) => {
 		e.preventDefault();
 		const formEl = e.target as HTMLFormElement;
 		if (!allComplete || isUploading) return;
 
+		const queue = buildUploadQueue();
+		if (queue.length === 0) {
+			toast.error('No files to upload');
+			return;
+		}
+
 		isUploading = true;
-		const formData = new FormData(formEl);
+		const actionUrl = formEl.action.replace('uploadDirectory', 'uploadSingleFile');
 
 		uploadProgress.set(0);
 		toast.custom(UploadProgressToast, {
@@ -275,66 +296,95 @@
 			uploadProgress.set(null);
 		};
 
+		let totalCreated = 0;
+		let totalMerged = 0;
+		let lastError: string | null = null;
+
 		try {
-			const res = await new Promise<{ ok: boolean; status: number; text: () => Promise<string> }>(
-				(resolve, reject) => {
-					const xhr = new XMLHttpRequest();
-					const startMs = Date.now();
-					xhr.open('POST', formEl.action);
-					xhr.setRequestHeader('Accept', 'application/json');
-					xhr.upload.onprogress = (ev) => {
-						if (ev.lengthComputable && ev.total > 0) {
-							uploadProgress.set(Math.round((ev.loaded / ev.total) * 100));
-						} else {
-							// Indeterminate: animate 0→80 over 2s
-							const elapsed = Date.now() - startMs;
-							uploadProgress.set(Math.min(80, Math.round((elapsed / 2000) * 80)));
-						}
-					};
-					xhr.upload.onload = () => {
-						// Bytes sent complete; server is now processing
-						uploadProgress.set(100);
-					};
-					xhr.onload = () =>
-						resolve({
-							ok: xhr.status >= 200 && xhr.status < 300,
-							status: xhr.status,
-							text: async () => xhr.responseText
-						});
-					xhr.onerror = () => reject(new Error('Upload failed'));
-					xhr.send(formData);
+			for (let i = 0; i < queue.length; i++) {
+				const { file, track, isFlac } = queue[i];
+				const fd = new FormData();
+				fd.set('file', file);
+				fd.set('license_url', track.licenseUrl?.trim() || sharedLicenseUrl || '');
+				fd.set('stream_url', track.streamUrl?.trim() || sharedStreamUrl || '');
+				fd.set('basename', track.basename);
+				fd.set('title', track.title);
+				fd.set('artist', track.artist || '');
+				fd.set('genre', track.genre || '');
+				fd.set('duration_ms', track.durationMs != null ? String(track.durationMs) : '');
+				fd.set('is_flac', String(isFlac));
+
+				const res = await new Promise<{ ok: boolean; status: number; text: () => Promise<string> }>(
+					(resolve, reject) => {
+						const xhr = new XMLHttpRequest();
+						const startMs = Date.now();
+						xhr.open('POST', actionUrl);
+						xhr.setRequestHeader('Accept', 'application/json');
+						xhr.upload.onprogress = (ev) => {
+							if (ev.lengthComputable && ev.total > 0) {
+								const fileProgress = ev.loaded / ev.total;
+								const overall = (i + fileProgress) / queue.length;
+								uploadProgress.set(Math.round(overall * 100));
+							} else {
+								const elapsed = Date.now() - startMs;
+								const fileContribution = Math.min(80, Math.round((elapsed / 2000) * 80));
+								const base = (i / queue.length) * 100;
+								uploadProgress.set(Math.round(base + (fileContribution / 100) * (100 / queue.length)));
+							}
+						};
+						xhr.upload.onload = () => {
+							uploadProgress.set(Math.round(((i + 1) / queue.length) * 100));
+						};
+						xhr.onload = () =>
+							resolve({
+								ok: xhr.status >= 200 && xhr.status < 300,
+								status: xhr.status,
+								text: async () => xhr.responseText
+							});
+						xhr.onerror = () => reject(new Error('Upload failed'));
+						xhr.send(fd);
+					}
+				);
+
+				let result: { type?: string; data?: { created?: number; merged?: number; error?: string } };
+				try {
+					result = deserialize(await res.text()) as typeof result;
+				} catch {
+					result = {};
 				}
-			);
-			done();
-			let result: { type?: string; data?: { count?: number; merged?: number; error?: string } };
-			try {
-				result = deserialize(await res.text()) as typeof result;
-			} catch {
-				result = {};
+
+				if (res.ok || res.status === 303 || res.status === 302) {
+					totalCreated += result?.data?.created ?? 0;
+					totalMerged += result?.data?.merged ?? 0;
+				} else {
+					lastError = result?.data?.error ?? 'Upload failed';
+					toast.error(`${file.name}: ${lastError}`, { id: `upload-err-${i}` });
+				}
 			}
-			if (res.ok || res.status === 303 || res.status === 302) {
-				const count = result?.data?.count ?? 0;
-				const merged = result?.data?.merged ?? 0;
-				const parts = [];
-				if (count > 0) parts.push(`${count} added`);
-				if (merged > 0) parts.push(`${merged} merged`);
-				const summary = parts.length > 0 ? `${parts.join(', ')}. ` : '';
+
+			done();
+			uploadProgress.set(100);
+
+			if (totalCreated > 0 || totalMerged > 0) {
+				const parts: string[] = [];
+				if (totalCreated > 0) parts.push(`${totalCreated} added`);
+				if (totalMerged > 0) parts.push(`${totalMerged} merged`);
 				toast.success('Upload complete', {
 					id: UPLOAD_TOAST_ID,
-					description: `${summary}It may take a moment for sources and candidates to appear.`
+					description: `${parts.join(', ')}. It may take a moment for sources and candidates to appear.`
 				});
 				showUploadDialog = false;
 				tracks = [];
 				sharedLicenseUrl = '';
+				sharedStreamUrl = '';
 				fileSelectError = '';
 				if (directoryInputRef) directoryInputRef.value = '';
 				if (filesInputRef) filesInputRef.value = '';
 				invalidateAll();
-			} else {
-				const err = result?.data?.error ?? 'Upload failed';
-				toast.error(err, { id: UPLOAD_TOAST_ID });
+			} else if (lastError) {
+				toast.error('Upload failed', { id: UPLOAD_TOAST_ID, description: lastError });
 			}
-		} catch (err) {
+		} catch {
 			done();
 			toast.error('Upload failed', { id: UPLOAD_TOAST_ID });
 		}

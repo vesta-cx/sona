@@ -723,5 +723,204 @@ export const actions = {
 
 		console.log('[uploadDirectory] done', { created, merged });
 		return { success: true, count: created, merged };
+	},
+
+	/**
+	 * Upload a single file (used for sequential per-file directory upload).
+	 * Client sends files in order: FLAC first per track, then candidates.
+	 * Avoids large single-request body limits.
+	 */
+	uploadSingleFile: async ({ request, platform }) => {
+		if (!platform) return fail(500, { error: 'Platform not available' });
+
+		const formData = await request.formData();
+		const file = formData.get('file') as File | null;
+		const licenseUrl = (formData.get('license_url') as string)?.trim() ?? '';
+		const streamUrl = (formData.get('stream_url') as string)?.trim() ?? '';
+		const basename = (formData.get('basename') as string)?.trim() ?? '';
+		const title = (formData.get('title') as string)?.trim() ?? '';
+		const artist = (formData.get('artist') as string)?.trim() ?? '';
+		const genre = (formData.get('genre') as string)?.trim() ?? '';
+		const durationMsRaw = formData.get('duration_ms') as string | null;
+		const durationMs = durationMsRaw ? parseInt(durationMsRaw, 10) : null;
+		const isFlac = formData.get('is_flac') === 'true';
+
+		if (!file || !(file instanceof File) || file.size === 0) {
+			return fail(400, { error: 'Missing or empty file' });
+		}
+		if (!basename || !title?.trim()) {
+			return fail(400, { error: 'Missing basename or title' });
+		}
+
+		if (!licenseUrl) {
+			return fail(400, { error: 'License URL is required' });
+		}
+
+		const db = getDb(platform);
+		const storage = getStorage(platform);
+
+		if (isFlac) {
+			// FLAC: create or update source
+			let existing = (
+				await db
+					.select()
+					.from(sourceFiles)
+					.where(eq(sourceFiles.basename, basename))
+					.limit(1)
+					.all()
+			)[0] ?? null;
+			if (!existing) {
+				const normalizedTitle = title.toLowerCase();
+				const legacySources = await db
+					.select()
+					.from(sourceFiles)
+					.where(isNull(sourceFiles.basename))
+					.all();
+				const matches = legacySources.filter((s) => s.title.trim().toLowerCase() === normalizedTitle);
+				if (matches.length === 1) {
+					existing = matches[0];
+					await db.update(sourceFiles).set({ basename }).where(eq(sourceFiles.id, existing.id));
+				}
+			}
+
+			if (existing) {
+				const existingCandidateIds = (
+					await db
+						.select({ id: candidateFiles.id })
+						.from(candidateFiles)
+						.where(eq(candidateFiles.sourceFileId, existing.id))
+						.all()
+				).map((c) => c.id);
+				if (existingCandidateIds.length > 0) {
+					const [usedA] = await db
+						.select({ id: answers.id })
+						.from(answers)
+						.where(inArray(answers.candidateAId, existingCandidateIds))
+						.limit(1)
+						.all();
+					const [usedB] = await db
+						.select({ id: answers.id })
+						.from(answers)
+						.where(inArray(answers.candidateBId, existingCandidateIds))
+						.limit(1)
+						.all();
+					if (usedA ?? usedB) {
+						return fail(400, { error: `Source "${basename}" has been used in survey responses` });
+					}
+				}
+
+				const flacBuffer = await file.arrayBuffer();
+				await storage.put(existing.r2Key, flacBuffer, 'audio/flac');
+				const clientDurationMs = durationMs != null ? Number(durationMs) : NaN;
+				const duration =
+					Number.isFinite(clientDurationMs) && clientDurationMs > 0
+						? Math.round(clientDurationMs)
+						: Math.round((file.size / (1400 * 1000 / 8)) * 1000);
+
+				await db
+					.update(sourceFiles)
+					.set({
+						title,
+						artist: artist || null,
+						genre: genre || null,
+						licenseUrl,
+						streamUrl: streamUrl?.trim() || null,
+						duration
+					})
+					.where(eq(sourceFiles.id, existing.id));
+
+				const oldCandidates = await db
+					.select({ id: candidateFiles.id, r2Key: candidateFiles.r2Key })
+					.from(candidateFiles)
+					.where(eq(candidateFiles.sourceFileId, existing.id))
+					.all();
+				const oldIds = oldCandidates.map((c) => c.id);
+				if (oldIds.length > 0) {
+					await db
+						.delete(ephemeralStreamUrls)
+						.where(inArray(ephemeralStreamUrls.candidateFileId, oldIds));
+					for (const c of oldCandidates) {
+						try {
+							await storage.delete(c.r2Key);
+						} catch {
+							// ignore
+						}
+					}
+					await db.delete(candidateFiles).where(eq(candidateFiles.sourceFileId, existing.id));
+				}
+				return { success: true, created: 0, merged: 1 };
+			}
+
+			// New source
+			const sourceSlug = slugForR2(basename);
+			const r2Key = `sources/${sourceSlug}_${crypto.randomUUID().slice(0, 8)}.flac`;
+			const flacBuffer = await file.arrayBuffer();
+			await storage.put(r2Key, flacBuffer, 'audio/flac');
+
+			const clientDurationMs = durationMs != null ? Number(durationMs) : NaN;
+			const durationMsFinal =
+				Number.isFinite(clientDurationMs) && clientDurationMs > 0
+					? Math.round(clientDurationMs)
+					: Math.round((file.size / (1400 * 1000 / 8)) * 1000);
+
+			await db.insert(sourceFiles).values({
+				basename,
+				r2Key,
+				licenseUrl,
+				streamUrl: streamUrl || null,
+				title,
+				artist: artist || null,
+				genre: genre || null,
+				duration: durationMsFinal
+			});
+			return { success: true, created: 1, merged: 0 };
+		}
+
+		// Non-FLAC: add as candidate; source must exist
+		const [source] = await db
+			.select()
+			.from(sourceFiles)
+			.where(eq(sourceFiles.basename, basename))
+			.limit(1)
+			.all();
+		if (!source) {
+			return fail(400, { error: `No source found for basename "${basename}". Upload FLAC first.` });
+		}
+
+		const path = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+		const parts = path.split(/[/\\]/);
+		const filename = parts[parts.length - 1] ?? '';
+		if (!filename) return fail(400, { error: 'Invalid filename' });
+
+		const match = filename.match(/_(opus|flac|mp3|aac)_(\d+)\.[a-z0-9]+$/i);
+		if (!match) return fail(400, { error: `Filename "${filename}" does not match expected format` });
+
+		const codec = match[1]?.toLowerCase() as (typeof CODECS)[number];
+		const bitrate = parseInt(match[2] ?? '0', 10);
+		if (!CODECS.includes(codec) || codec === 'flac') {
+			return fail(400, { error: `Invalid codec for candidate: ${codec}` });
+		}
+
+		const existingCandidates = await db
+			.select({ codec: candidateFiles.codec, bitrate: candidateFiles.bitrate })
+			.from(candidateFiles)
+			.where(eq(candidateFiles.sourceFileId, source.id))
+			.all();
+		const existingKeys = new Set(existingCandidates.map((c) => `${c.codec}_${c.bitrate}`));
+		if (existingKeys.has(`${codec}_${bitrate}`)) {
+			return { success: true, created: 0, merged: 0, skipped: 'duplicate' };
+		}
+
+		const candidateSlug = slugForR2(filename);
+		const candidateR2Key = `candidates/${source.id}/${candidateSlug}`;
+		const buffer = await file.arrayBuffer();
+		await storage.put(candidateR2Key, buffer, file.type || 'application/octet-stream');
+		await db.insert(candidateFiles).values({
+			r2Key: candidateR2Key,
+			codec,
+			bitrate,
+			sourceFileId: source.id
+		});
+		return { success: true, created: 0, merged: 0 };
 	}
 } satisfies Actions;
