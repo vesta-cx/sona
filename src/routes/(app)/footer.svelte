@@ -16,7 +16,7 @@
 			</p>
 			<Anchor
 				class="mt-2 text-sm font-bold"
-				href="https://github.com/vesta-cx/quality-survey"
+				href="https://github.com/vesta-cx/sona"
 			>
 				Contribute to this project
 			</Anchor>
@@ -85,6 +85,21 @@
 					href="mailto:contact@mia.cx"
 				>
 					Contact
+				</Anchor>
+			</li>
+			<li>
+				<Anchor class="text-muted-foreground hover:text-foreground" href="/legal/license">
+					Content License
+				</Anchor>
+			</li>
+			<li>
+				<Anchor class="text-muted-foreground hover:text-foreground" href="/legal/privacy">
+					Privacy Policy
+				</Anchor>
+			</li>
+			<li>
+				<Anchor class="text-muted-foreground hover:text-foreground" href="/legal/terms">
+					Terms of Use
 				</Anchor>
 			</li>
 			<li>
