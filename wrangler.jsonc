@@ -1,9 +1,12 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "vesta_quality_survey",
+	"name": "vesta_sona",
 	"main": ".svelte-kit/cloudflare/_worker.js",
 	"compatibility_date": "2026-02-12",
-	"compatibility_flags": ["nodejs_compat", "nodejs_als"],
+	"compatibility_flags": [
+		"nodejs_compat",
+		"nodejs_als"
+	],
 	"assets": {
 		"binding": "ASSETS",
 		"directory": ".svelte-kit/cloudflare"
@@ -11,21 +14,30 @@
 	"observability": {
 		"enabled": true
 	},
+	"routes": [
+		{
+			"pattern": "sona.vesta.cx",
+			"zone_name": "vesta.cx",
+			"custom_domain": true
+		}
+	],
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "vesta-quality-survey-db",
-			"database_id": "a256b90f-a891-4957-b179-b7237705ad4f",
-			"migrations_dir": "drizzle"
+			"database_name": "vesta-sona-db",
+			"database_id": "edd90535-4d28-4d35-891a-9454c7509176",
+			"migrations_dir": "drizzle",
 		}
 	],
 	"r2_buckets": [
 		{
+			"bucket_name": "vesta-sona-audio",
 			"binding": "AUDIO_BUCKET",
-			"bucket_name": "vesta-quality-survey-audio"
 		}
 	],
 	"triggers": {
-		"crons": ["0 */6 * * *"]
+		"crons": [
+			"0 */6 * * *"
+		]
 	}
 }

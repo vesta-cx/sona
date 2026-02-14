@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto, invalidateAll } from '$app/navigation';
+	import { pageTitle } from '$lib/constants/identity';
 	import * as AlertDialog from '@vesta-cx/ui/components/ui/alert-dialog';
 	import * as Empty from '@vesta-cx/ui/components/ui/empty';
 	import * as Popover from '@vesta-cx/ui/components/ui/popover';
@@ -278,7 +279,7 @@
 <svelte:window onkeydown={handleKeyDown} />
 
 <svelte:head>
-	<title>Play | Quality Survey</title>
+	<title>{pageTitle('Play')}</title>
 </svelte:head>
 
 <div class="relative min-h-screen">

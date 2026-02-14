@@ -16,6 +16,7 @@
 	import EggIcon from '@lucide/svelte/icons/egg';
 	import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down';
 	import LogOutIcon from '@lucide/svelte/icons/log-out';
+	import { SITE_NAME } from '$lib/constants/identity';
 
 	interface Props {
 		email: string;
@@ -76,7 +77,7 @@
 	</Sidebar.Header>
 	<Sidebar.Content>
 		<Sidebar.Group>
-			<Sidebar.GroupLabel>Quality Survey</Sidebar.GroupLabel>
+			<Sidebar.GroupLabel>{SITE_NAME}</Sidebar.GroupLabel>
 			<Sidebar.Menu>
 				{#each navItems as item}
 					{#snippet linkChild({ props })}

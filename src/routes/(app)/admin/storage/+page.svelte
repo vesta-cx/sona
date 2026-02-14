@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { pageTitle } from '$lib/constants/identity';
 	import { Button } from '@vesta-cx/ui/components/ui/button';
 	import {
 		Table,
@@ -50,7 +51,7 @@
 </script>
 
 <svelte:head>
-	<title>R2 Storage | Admin | Quality Survey</title>
+	<title>{pageTitle('R2 Storage | Admin')}</title>
 </svelte:head>
 
 <div class="space-y-6">

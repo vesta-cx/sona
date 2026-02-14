@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import { pageTitle } from '$lib/constants/identity';
 
 	let { data, form } = $props();
 
@@ -80,7 +81,7 @@
 </script>
 
 <svelte:head>
-	<title>Setup Your Device | Quality Survey</title>
+	<title>{pageTitle('Setup Your Device')}</title>
 </svelte:head>
 
 <div class="mx-auto flex min-h-screen max-w-lg flex-col items-center justify-center px-4 py-12">

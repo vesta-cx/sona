@@ -35,8 +35,8 @@ export const LINKS = {
  */
 export const IMAGES = {
 	favicon: '/favicon.svg',
-	/** OG/Twitter card image (1200×630 recommended). Add when you have one. */
-	ogImage: null as string | null
+	/** OG/Twitter card image (1200×630). Run `pnpm capture-og` with dev server to generate. */
+	ogImage: '/og.png'
 } as const;
 
 /** Format a page title: "Page | Sona" or "Sona — Tagline" for home */

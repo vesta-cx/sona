@@ -1,9 +1,11 @@
 <script lang="ts">
+	import { pageTitle } from '$lib/constants/identity';
+
 	let { data } = $props();
 </script>
 
 <svelte:head>
-	<title>Admin Dashboard | Quality Survey</title>
+	<title>{pageTitle('Admin Dashboard')}</title>
 </svelte:head>
 
 <div class="space-y-6">
