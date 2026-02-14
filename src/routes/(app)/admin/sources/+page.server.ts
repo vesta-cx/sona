@@ -422,16 +422,6 @@ export const actions = {
 		const tracksRaw = formData.get('tracks') as string | null;
 		const files = formData.getAll('files') as File[];
 
-		console.log('[uploadDirectory] received', {
-			fileCount: files.length,
-			files: files.map((f) => ({
-				name: f.name,
-				webkitRelativePath: (f as File & { webkitRelativePath?: string }).webkitRelativePath ?? '(none)',
-				size: f.size,
-				type: f.type
-			}))
-		});
-
 		if (!tracksRaw || files.length === 0) {
 			return fail(400, { error: 'Select a directory and fill in track metadata' });
 		}
@@ -454,27 +444,11 @@ export const actions = {
 		for (const file of files) {
 			const path = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
 			const basename = extractBasename(path);
-			if (!basename) {
-				console.log('[uploadDirectory] skip file (no basename)', { path });
-				continue;
-			}
+			if (!basename) continue;
 			const group = byBasename.get(basename) ?? [];
 			group.push(file);
 			byBasename.set(basename, group);
 		}
-
-		console.log('[uploadDirectory] byBasename', {
-			keys: [...byBasename.keys()],
-			groups: Object.fromEntries(
-				[...byBasename.entries()].map(([k, v]) => [
-					k,
-					v.map((f) => {
-						const p = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
-						return { path: p, name: f.name };
-					})
-				])
-			)
-		});
 
 		let created = 0;
 		let merged = 0;
@@ -484,30 +458,15 @@ export const actions = {
 			if (!title?.trim()) continue;
 
 			const group = byBasename.get(basename);
-			if (!group) {
-				console.log('[uploadDirectory] track skipped (no group)', { basename, title });
-				continue;
-			}
+			if (!group) continue;
 
 			const flacFile = group.find((f) => {
 				const p = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
 				return p.includes('/flac/') || f.name.endsWith('.flac');
 			});
 
-			console.log('[uploadDirectory] track', {
-				basename,
-				title,
-				groupSize: group.length,
-				groupPaths: group.map((f) => (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name),
-				flacFound: Boolean(flacFile),
-				flacPath: flacFile ? ((flacFile as File & { webkitRelativePath?: string }).webkitRelativePath || flacFile.name) : null
-			});
-
 			const effectiveLicense = (licenseUrl?.trim() || sharedLicenseUrl)?.trim();
-			if (!effectiveLicense) {
-				console.log('[uploadDirectory] track skipped: no license', { basename });
-				continue;
-			}
+			if (!effectiveLicense) continue;
 
 			// Look up existing source by basename (or title for legacy rows without basename)
 			// Use limit(1).all() instead of .get() — D1 can throw "Failed query" with .get() on certain params
@@ -566,10 +525,7 @@ export const actions = {
 						.where(inArray(answers.candidateBId, existingCandidateIds))
 						.limit(1)
 						.all();
-					if (usedA ?? usedB) {
-						console.log('[uploadDirectory] track skipped: source has answers (FK)', { basename });
-						continue;
-					}
+					if (usedA ?? usedB) continue;
 				}
 
 				source = existing;
@@ -621,10 +577,7 @@ export const actions = {
 				// existingKeys stays empty so we add all from upload
 			} else {
 				// Create new source — requires FLAC
-				if (!flacFile) {
-					console.log('[uploadDirectory] track skipped: new source but no FLAC', { basename });
-					continue;
-				}
+				if (!flacFile) continue;
 
 				const sourceSlug = slugForR2(basename);
 				const r2Key = `sources/${sourceSlug}_${crypto.randomUUID().slice(0, 8)}.flac`;
@@ -672,30 +625,17 @@ export const actions = {
 				const path = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
 				const parts = path.split(/[/\\]/);
 				const filename = parts[parts.length - 1] ?? '';
-				if (!filename) {
-					console.log('[uploadDirectory] candidate skip: no filename', { path });
-					continue;
-				}
+				if (!filename) continue;
 
 				const match = filename.match(/_(opus|flac|mp3|aac)_(\d+)\.[a-z0-9]+$/i);
-				if (!match) {
-					console.log('[uploadDirectory] candidate skip: regex no match', { basename, filename });
-					continue;
-				}
+				if (!match) continue;
 
 				const codec = match[1]?.toLowerCase() as (typeof CODECS)[number];
 				const bitrate = parseInt(match[2] ?? '0', 10);
 				const inCodecs = CODECS.includes(codec);
 				const isDup = existingKeys.has(`${codec}_${bitrate}`);
 
-				if (!inCodecs) {
-					console.log('[uploadDirectory] candidate skip: codec not in CODECS', { basename, filename, codec });
-					continue;
-				}
-				if (isDup) {
-					console.log('[uploadDirectory] candidate skip: duplicate', { basename, codec, bitrate });
-					continue;
-				}
+				if (!inCodecs || isDup) continue;
 
 				const candidateSlug = slugForR2(filename);
 				const candidateR2Key = `candidates/${source.id}/${candidateSlug}`;
@@ -709,7 +649,6 @@ export const actions = {
 					sourceFileId: source.id
 				});
 
-				console.log('[uploadDirectory] candidate uploaded', { basename, codec, bitrate, filename });
 				existingKeys.add(`${codec}_${bitrate}`);
 			}
 		}
@@ -721,7 +660,6 @@ export const actions = {
 			});
 		}
 
-		console.log('[uploadDirectory] done', { created, merged });
 		return { success: true, count: created, merged };
 	},
 

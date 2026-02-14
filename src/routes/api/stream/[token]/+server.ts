@@ -10,16 +10,8 @@ const bytesPerSecondFromBitrate = (bitrate: number): number => {
 	return (bitrate * 1000) / 8;
 };
 
-const LOG = '[game:stream]';
-
 export const GET: RequestHandler = async ({ params, url, platform }) => {
-	console.log(`${LOG} GET /api/stream/[token] request`, {
-		token: params.token,
-		query: Object.fromEntries(url.searchParams)
-	});
-
 	if (!platform) {
-		console.error(`${LOG} Platform not available`);
 		return error(500, 'Platform not available');
 	}
 
@@ -36,12 +28,10 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 		.get();
 
 	if (!streamUrl) {
-		console.warn(`${LOG} Token not found: ${token}`);
 		return error(404, 'Stream not found');
 	}
 
 	if (streamUrl.expiresAt < new Date()) {
-		console.warn(`${LOG} Token expired: ${token}`);
 		await db.delete(ephemeralStreamUrls).where(eq(ephemeralStreamUrls.token, token));
 		return error(410, 'Stream expired');
 	}
@@ -53,17 +43,8 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 		.get();
 
 	if (!candidate) {
-		console.warn(`${LOG} Candidate not found for token: ${token}`);
 		return error(404, 'Audio file not found');
 	}
-
-	console.log(`${LOG} Resolved token → candidate`, {
-		token: token.slice(0, 8) + '...',
-		candidateId: candidate.id,
-		codec: candidate.codec,
-		bitrate: candidate.bitrate,
-		r2Key: candidate.r2Key
-	});
 
 	const bucket = platform.env.AUDIO_BUCKET;
 	const bytesPerSec = bytesPerSecondFromBitrate(candidate.bitrate);
@@ -84,15 +65,8 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 		: await bucket.get(candidate.r2Key);
 
 	if (!object || !object.body) {
-		console.error(`${LOG} R2 object not found: ${candidate.r2Key}`);
 		return error(404, 'Audio file not in storage');
 	}
-
-	console.log(`${LOG} Serving ${range ? 'partial' : 'full'} audio`, {
-		token: token.slice(0, 8) + '...',
-		size: object.size,
-		range: range ?? 'none'
-	});
 
 	const contentType = object.httpMetadata?.contentType ?? 'audio/mpeg';
 	const size = object.size;

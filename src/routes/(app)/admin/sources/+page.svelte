@@ -111,14 +111,6 @@
 	const extractBasename = (path: string): string | null => {
 		const filename = (path.split(/[/\\]/).pop() ?? '').trim();
 		const match = filename.match(BASENAME_REGEX) ?? filename.match(BASENAME_FALLBACK);
-		console.log('[extractBasename]', {
-			path,
-			filename,
-			filenameLength: filename.length,
-			filenameBytes: [...filename].map((c) => c.codePointAt(0)),
-			match: match ? match[0] : null,
-			basename: match ? match[1] ?? null : null
-		});
 		if (match) return match[1] ?? null;
 		// Ultimate fallback: use filename stem for any audio file
 		const stem = filename.replace(/\.[a-z0-9]+$/i, '');
@@ -141,15 +133,6 @@
 
 		const fileList = Array.from(files) as (File & { webkitRelativePath?: string })[];
 		const byBasename = new Map<string, File[]>();
-
-		console.log('[handleFileSelect]', {
-			inputType: input.hasAttribute('webkitdirectory') ? 'directory' : 'files',
-			fileCount: fileList.length,
-			files: fileList.map((f) => ({
-				name: f.name,
-				webkitRelativePath: (f as File & { webkitRelativePath?: string }).webkitRelativePath ?? '(none)'
-			}))
-		});
 
 		for (const file of fileList) {
 			const path = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
@@ -224,7 +207,6 @@
 			}
 		}
 
-		console.log('[handleFileSelect] result', { entriesCount: entries.length, basenames: entries.map((e) => e.basename) });
 		if (entries.length === 0) {
 			fileSelectError =
 				'No files matched the expected format. Use basename_codec_bitrate.ext (e.g. song_mp3_128.mp3, song_flac_0.flac). Or try the Directory option.';
