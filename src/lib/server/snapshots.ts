@@ -1,76 +1,13 @@
-import { sql, eq, lt, count } from 'drizzle-orm';
+import { eq, lt } from 'drizzle-orm';
 import type { Database } from './db';
-import { answers, candidateFiles, resultSnapshots, listeningDevices } from './db/schema';
-
-/**
- * Bradley-Terry model: iterative MLE to compute strength parameters
- * from pairwise comparison data.
- *
- * Given pairs (i wins over j), estimate strength[i] for each item.
- * Higher strength = more preferred.
- */
-const computeBradleyTerry = (
-	comparisons: Array<{ winner: string; loser: string }>,
-	items: string[],
-	iterations = 50
-): Record<string, number> => {
-	// Initialize all strengths to 1
-	const strength: Record<string, number> = {};
-	for (const item of items) {
-		strength[item] = 1.0;
-	}
-
-	if (comparisons.length === 0) return strength;
-
-	// Count wins and appearances
-	const wins: Record<string, number> = {};
-	const pairCounts: Record<string, Record<string, number>> = {};
-
-	for (const item of items) {
-		wins[item] = 0;
-		pairCounts[item] = {};
-	}
-
-	for (const { winner, loser } of comparisons) {
-		wins[winner] = (wins[winner] ?? 0) + 1;
-		pairCounts[winner] = pairCounts[winner] ?? {};
-		pairCounts[winner][loser] = (pairCounts[winner][loser] ?? 0) + 1;
-		pairCounts[loser] = pairCounts[loser] ?? {};
-		pairCounts[loser][winner] = (pairCounts[loser][winner] ?? 0) + 1;
-	}
-
-	// Iterative update
-	for (let iter = 0; iter < iterations; iter++) {
-		const newStrength: Record<string, number> = {};
-
-		for (const item of items) {
-			const w = wins[item] ?? 0;
-			if (w === 0) {
-				newStrength[item] = 0.001; // Avoid zero
-				continue;
-			}
-
-			let denominator = 0;
-			const pairs = pairCounts[item] ?? {};
-			for (const [opponent, pairCount] of Object.entries(pairs)) {
-				const si = strength[item] ?? 1;
-				const sj = strength[opponent] ?? 1;
-				denominator += pairCount / (si + sj);
-			}
-
-			newStrength[item] = denominator > 0 ? w / denominator : 0.001;
-		}
-
-		// Normalize so strengths sum to items.length
-		const total = Object.values(newStrength).reduce((a, b) => a + b, 0);
-		const scale = items.length / total;
-		for (const item of items) {
-			strength[item] = (newStrength[item] ?? 0) * scale;
-		}
-	}
-
-	return strength;
-};
+import {
+	answers,
+	candidateFiles,
+	listeningDevices,
+	resultSnapshots,
+	sourceFiles
+} from './db/schema';
+import { computeBradleyTerry } from './bradley-terry';
 
 export const generateSnapshot = async (db: Database): Promise<void> => {
 	// Get all answers
@@ -84,6 +21,21 @@ export const generateSnapshot = async (db: Database): Promise<void> => {
 		});
 		return;
 	}
+
+	// Derive comparison type from pairingType + transitionMode
+	const getComparisonType = (
+		pairing: string,
+		transition: string
+	): 'same_gapless' | 'same_gap' | 'different_gapless' | 'different_gap' | null => {
+		if (pairing === 'placebo') return null;
+		const isSame = pairing === 'same_song';
+		const isGapless = transition === 'gapless';
+		if (isSame && isGapless) return 'same_gapless';
+		if (isSame && !isGapless) return 'same_gap';
+		if (!isSame && isGapless) return 'different_gapless';
+		if (!isSame && !isGapless) return 'different_gap';
+		return null;
+	};
 
 	// Build comparisons for Bradley-Terry
 	const comparisons: Array<{ winner: string; loser: string }> = [];
@@ -106,6 +58,19 @@ export const generateSnapshot = async (db: Database): Promise<void> => {
 			.get();
 		if (c) candidateCache.set(id, c);
 		return c;
+	};
+
+	const sourceGenreCache = new Map<string, string | null>();
+	const loadSourceGenre = async (sourceFileId: string): Promise<string | null> => {
+		if (sourceGenreCache.has(sourceFileId)) return sourceGenreCache.get(sourceFileId)!;
+		const row = await db
+			.select({ genre: sourceFiles.genre })
+			.from(sourceFiles)
+			.where(eq(sourceFiles.id, sourceFileId))
+			.get();
+		const genre = row?.genre?.toLowerCase().trim() ?? null;
+		sourceGenreCache.set(sourceFileId, genre);
+		return genre;
 	};
 
 	let neitherCount = 0;
@@ -144,18 +109,87 @@ export const generateSnapshot = async (db: Database): Promise<void> => {
 	const allItems = [...new Set(comparisons.flatMap((c) => [c.winner, c.loser]))];
 	const bradleyTerryScores = computeBradleyTerry(comparisons, allItems);
 
-	// Device breakdown
+	// Genre-segmented Bradley-Terry for codecPqScoresByGenre
+	const codecPqScoresByGenre: Record<string, Record<string, number>> = {};
+	const comparisonsByGenre = new Map<string, Array<{ winner: string; loser: string }>>();
+
+	for (const answer of allAnswers) {
+		const candA = await loadCandidate(answer.candidateAId);
+		const candB = await loadCandidate(answer.candidateBId);
+		if (!candA || !candB) continue;
+
+		const genreA = await loadSourceGenre(candA.sourceFileId);
+		const genreB = await loadSourceGenre(candB.sourceFileId);
+		const genres = new Set<string>();
+		if (genreA) genres.add(genreA);
+		if (genreB) genres.add(genreB);
+
+		const keyA = `${candA.codec}_${candA.bitrate}`;
+		const keyB = `${candB.codec}_${candB.bitrate}`;
+		let winner: string;
+		let loser: string;
+		if (answer.selected === 'a') {
+			winner = keyA;
+			loser = keyB;
+		} else if (answer.selected === 'b') {
+			winner = keyB;
+			loser = keyA;
+		} else continue;
+
+		for (const g of genres) {
+			if (!comparisonsByGenre.has(g)) comparisonsByGenre.set(g, []);
+			comparisonsByGenre.get(g)!.push({ winner, loser });
+		}
+	}
+
+	for (const [genre, genreComparisons] of comparisonsByGenre) {
+		const genreItems = [...new Set(genreComparisons.flatMap((c) => [c.winner, c.loser]))];
+		if (genreItems.length < 2) continue;
+		const genreScores = computeBradleyTerry(genreComparisons, genreItems);
+		const maxGenreStrength = Math.max(...Object.values(genreScores), 1);
+		for (const [key, strength] of Object.entries(genreScores)) {
+			codecPqScoresByGenre[key] = codecPqScoresByGenre[key] ?? {};
+			codecPqScoresByGenre[key][genre] =
+				Math.round((strength / maxGenreStrength) * 1000) / 10;
+		}
+	}
+
+	// Device breakdown (deviceType + priceTier)
 	const deviceBreakdown: Record<string, number> = {};
+	const tierBreakdown: Record<string, number> = {};
+	let totalResponseTime = 0;
+	let responseTimeCount = 0;
+	const comparisonCounts = {
+		same_gapless: 0,
+		same_gap: 0,
+		different_gapless: 0,
+		different_gap: 0
+	};
+
 	for (const answer of allAnswers) {
 		const device = await db
-			.select({ deviceType: listeningDevices.deviceType })
+			.select({
+				deviceType: listeningDevices.deviceType,
+				priceTier: listeningDevices.priceTier
+			})
 			.from(listeningDevices)
 			.where(eq(listeningDevices.id, answer.deviceId))
 			.get();
 		if (device) {
-			deviceBreakdown[device.deviceType] = (deviceBreakdown[device.deviceType] ?? 0) + 1;
+			deviceBreakdown[device.deviceType] =
+				(deviceBreakdown[device.deviceType] ?? 0) + 1;
+			tierBreakdown[device.priceTier] = (tierBreakdown[device.priceTier] ?? 0) + 1;
 		}
+		if (answer.responseTime != null) {
+			totalResponseTime += answer.responseTime;
+			responseTimeCount += 1;
+		}
+		const compType = getComparisonType(answer.pairingType, answer.transitionMode);
+		if (compType) comparisonCounts[compType] += 1;
 	}
+
+	const avgResponseTimeMs =
+		responseTimeCount > 0 ? Math.round(totalResponseTime / responseTimeCount) : null;
 
 	// Heatmap data: codec x bitrate win rates
 	const heatmapWins: Record<string, Record<string, number>> = {};
@@ -263,6 +297,269 @@ export const generateSnapshot = async (db: Database): Promise<void> => {
 		neitherByBitrateDiff[bucket] = total > 0 ? neither / total : 0;
 	}
 
+	// codec_matchup_matrix: { "opus_vs_mp3": { "64_128": { a_wins, b_wins, neither }, ... } }
+	const codecMatchupMatrix: Record<
+		string,
+		Record<string, { a_wins: number; b_wins: number; neither: number }>
+	> = {};
+
+	for (const answer of allAnswers) {
+		const candA = await loadCandidate(answer.candidateAId);
+		const candB = await loadCandidate(answer.candidateBId);
+		if (!candA || !candB) continue;
+		if (candA.codec === candB.codec) continue;
+
+		const [first, second] =
+			candA.codec < candB.codec
+				? [candA, candB]
+				: [candB, candA];
+		const pairKey = `${first.codec}_vs_${second.codec}`;
+		const brKey = `${first.bitrate}_${second.bitrate}`;
+
+		codecMatchupMatrix[pairKey] = codecMatchupMatrix[pairKey] ?? {};
+		const cell = codecMatchupMatrix[pairKey][brKey] ?? {
+			a_wins: 0,
+			b_wins: 0,
+			neither: 0
+		};
+
+		const firstWon =
+			(answer.selected === 'a' && candA.codec === first.codec) ||
+			(answer.selected === 'b' && candB.codec === first.codec);
+		if (answer.selected === 'neither') {
+			cell.neither += 1;
+		} else if (firstWon) {
+			cell.a_wins += 1;
+		} else {
+			cell.b_wins += 1;
+		}
+		codecMatchupMatrix[pairKey][brKey] = cell;
+	}
+
+	// bitrate_gap_confidence: { "0_32": { neither_rate, sample_size }, ... }
+	const bucketToKey: Record<string, string> = {
+		'0-32': '0_32',
+		'32-64': '33_64',
+		'64-128': '65_128',
+		'128+': '129_plus'
+	};
+	const bitrateGapConfidence: Record<
+		string,
+		{ neither_rate: number; sample_size: number }
+	> = {};
+	for (const [bucket, { neither, total }] of Object.entries(neitherByDiff)) {
+		const key = bucketToKey[bucket] ?? bucket;
+		bitrateGapConfidence[key] = {
+			neither_rate: total > 0 ? neither / total : 0,
+			sample_size: total
+		};
+	}
+
+	// codec_equivalence_ratios: { "opus_vs_mp3": 1.42 } — derive from 50% crossover
+	const codecEquivalenceRatios: Record<string, number> = {};
+	for (const [pairKey, brMap] of Object.entries(codecMatchupMatrix)) {
+		// Find bitrate pairs where win rate ≈ 50%
+		let bestRatio: number | null = null;
+		for (const [brKey, cell] of Object.entries(brMap)) {
+			const total = cell.a_wins + cell.b_wins + cell.neither;
+			if (total < 10) continue;
+			const winRate = cell.a_wins / (cell.a_wins + cell.b_wins || 1);
+			if (winRate >= 0.45 && winRate <= 0.55) {
+				const [brA, brB] = brKey.split('_').map(Number);
+				if (brA > 0 && brB > 0) {
+					const ratio = brB / brA;
+					if (bestRatio == null || Math.abs(ratio - 1) < Math.abs(bestRatio - 1))
+						bestRatio = ratio;
+				}
+			}
+		}
+		if (bestRatio != null) codecEquivalenceRatios[pairKey] = bestRatio;
+	}
+
+	// Bitrate tier win rates: lossless (0), high (256+), mid (128-192), low (<128)
+	const getBitrateTier = (bitrate: number): 'lossless' | 'high' | 'mid' | 'low' => {
+		if (bitrate === 0) return 'lossless';
+		if (bitrate >= 256) return 'high';
+		if (bitrate >= 128) return 'mid';
+		return 'low';
+	};
+	const tierWins: Record<string, number> = { lossless: 0, high: 0, mid: 0, low: 0 };
+	const tierTotal: Record<string, number> = { lossless: 0, high: 0, mid: 0, low: 0 };
+
+	for (const answer of allAnswers) {
+		const candA = await loadCandidate(answer.candidateAId);
+		const candB = await loadCandidate(answer.candidateBId);
+		if (!candA || !candB) continue;
+		for (const cand of [candA, candB]) {
+			const tier = getBitrateTier(cand.bitrate);
+			tierTotal[tier] += 1;
+			if (
+				(answer.selected === 'a' && cand === candA) ||
+				(answer.selected === 'b' && cand === candB)
+			) {
+				tierWins[tier] += 1;
+			}
+		}
+	}
+
+	const bitrateLosslessWinRate =
+		tierTotal.lossless > 0 ? tierWins.lossless / tierTotal.lossless : null;
+	const bitrateHighWinRate =
+		tierTotal.high > 0 ? tierWins.high / tierTotal.high : null;
+	const bitrateMidWinRate =
+		tierTotal.mid > 0 ? tierWins.mid / tierTotal.mid : null;
+	const bitrateLowWinRate =
+		tierTotal.low > 0 ? tierWins.low / tierTotal.low : null;
+
+	// Headline matchups: lossless vs lossy, opus vs mp3, aac vs mp3
+	let losslessVsLossyWins = 0;
+	let losslessVsLossyTotal = 0;
+	let opusVsMp3OpusWins = 0;
+	let opusVsMp3Total = 0;
+	let aacVsMp3AacWins = 0;
+	let aacVsMp3Total = 0;
+
+	for (const answer of allAnswers) {
+		const candA = await loadCandidate(answer.candidateAId);
+		const candB = await loadCandidate(answer.candidateBId);
+		if (!candA || !candB) continue;
+
+		const isAFlac = candA.codec === 'flac';
+		const isBFlac = candB.codec === 'flac';
+		if (isAFlac !== isBFlac) {
+			losslessVsLossyTotal += 1;
+			if (
+				(answer.selected === 'a' && isAFlac) ||
+				(answer.selected === 'b' && isBFlac)
+			) {
+				losslessVsLossyWins += 1;
+			}
+		}
+
+		const opusMp3 =
+			(candA.codec === 'opus' && candB.codec === 'mp3') ||
+			(candA.codec === 'mp3' && candB.codec === 'opus');
+		if (opusMp3 && candA.bitrate === candB.bitrate) {
+			opusVsMp3Total += 1;
+			if (
+				(answer.selected === 'a' && candA.codec === 'opus') ||
+				(answer.selected === 'b' && candB.codec === 'opus')
+			) {
+				opusVsMp3OpusWins += 1;
+			}
+		}
+
+		const aacMp3 =
+			(candA.codec === 'aac' && candB.codec === 'mp3') ||
+			(candA.codec === 'mp3' && candB.codec === 'aac');
+		if (aacMp3 && candA.bitrate === candB.bitrate) {
+			aacVsMp3Total += 1;
+			if (
+				(answer.selected === 'a' && candA.codec === 'aac') ||
+				(answer.selected === 'b' && candB.codec === 'aac')
+			) {
+				aacVsMp3AacWins += 1;
+			}
+		}
+	}
+
+	// PQ scores: normalize Bradley-Terry to 0-100 (max = 100%)
+	const maxStrength = Math.max(...Object.values(bradleyTerryScores), 1);
+	const codecPqScores: Record<string, number> = {};
+	for (const [key, strength] of Object.entries(bradleyTerryScores)) {
+		codecPqScores[key] = Math.round((strength / maxStrength) * 1000) / 10;
+	}
+
+	// transparency_thresholds: bitrate where PQ > 95% per codec (excluding flac)
+	const transparencyThresholds: Record<string, number> = {};
+	const pqByCodec: Record<string, Array<{ bitrate: number; pq: number }>> = {};
+	for (const [key, pq] of Object.entries(codecPqScores)) {
+		const [codec, brStr] = key.split('_');
+		const bitrate = parseInt(brStr ?? '0', 10);
+		pqByCodec[codec] = pqByCodec[codec] ?? [];
+		pqByCodec[codec].push({ bitrate, pq });
+	}
+	for (const [codec, points] of Object.entries(pqByCodec)) {
+		if (codec === 'flac') continue;
+		const sorted = points.sort((a, b) => a.bitrate - b.bitrate);
+		for (const { bitrate, pq } of sorted) {
+			if (pq >= 95) {
+				transparencyThresholds[codec] = bitrate;
+				break;
+			}
+		}
+	}
+
+	// diminishing_returns_points: bitrate where ΔPQ per 32kbps < 2%
+	const diminishingReturnsPoints: Record<string, number> = {};
+	const SLOPE_THRESHOLD = 2 / 32; // ΔPQ < 2% per 32kbps → slope < 2/32 per kbps
+	for (const [codec, points] of Object.entries(pqByCodec)) {
+		if (codec === 'flac') continue;
+		const sorted = points.filter((p) => p.bitrate > 0).sort((a, b) => a.bitrate - b.bitrate);
+		let lastBr = 0;
+		let lastPq = 0;
+		for (const { bitrate, pq } of sorted) {
+			const deltaBr = bitrate - lastBr;
+			if (deltaBr >= 32 && lastBr > 0) {
+				const slope = (pq - lastPq) / deltaBr;
+				if (slope < SLOPE_THRESHOLD) {
+					diminishingReturnsPoints[codec] = bitrate;
+					break;
+				}
+			}
+			lastBr = bitrate;
+			lastPq = pq;
+		}
+	}
+
+	// Quality vs content preference (different-song only). Do NOT enable on homepage yet.
+	const differentSongAnswers = allAnswers.filter((a) => a.pairingType === 'different_song');
+	let qualityWins = 0;
+	let contentWins = 0;
+	const qualityByGap: Record<
+		string,
+		{ quality_wins: number; content_wins: number }
+	> = {};
+	const getGapKey = (diff: number): string => {
+		if (diff <= 32) return '32kbps_gap';
+		if (diff <= 64) return '64kbps_gap';
+		if (diff <= 128) return '128kbps_gap';
+		return '192kbps_gap';
+	};
+
+	for (const answer of differentSongAnswers) {
+		const candA = await loadCandidate(answer.candidateAId);
+		const candB = await loadCandidate(answer.candidateBId);
+		if (!candA || !candB) continue;
+		if (answer.selected === 'neither') continue;
+
+		const keyA = `${candA.codec}_${candA.bitrate}`;
+		const keyB = `${candB.codec}_${candB.bitrate}`;
+		const pqA = codecPqScores[keyA] ?? 0;
+		const pqB = codecPqScores[keyB] ?? 0;
+		const higherQualityPicked =
+			(answer.selected === 'a' && pqA >= pqB) || (answer.selected === 'b' && pqB >= pqA);
+
+		if (higherQualityPicked) qualityWins += 1;
+		else contentWins += 1;
+
+		const diff = Math.abs(candA.bitrate - candB.bitrate);
+		const gapKey = getGapKey(diff);
+		qualityByGap[gapKey] = qualityByGap[gapKey] ?? {
+			quality_wins: 0,
+			content_wins: 0
+		};
+		if (higherQualityPicked) qualityByGap[gapKey].quality_wins += 1;
+		else qualityByGap[gapKey].content_wins += 1;
+	}
+
+	const crossGenreQualityTradeoff =
+		differentSongAnswers.length > 0
+			? { quality_wins: qualityWins, content_wins: contentWins }
+			: null;
+	const qualityVsContentByGap =
+		Object.keys(qualityByGap).length > 0 ? qualityByGap : null;
+
 	const insights = {
 		codecWinRates,
 		bradleyTerryScores,
@@ -273,10 +570,57 @@ export const generateSnapshot = async (db: Database): Promise<void> => {
 		neitherByBitrateDiff
 	};
 
-	// Insert snapshot
+	// Insert snapshot with all scalar columns
 	await db.insert(resultSnapshots).values({
 		expiresAt: new Date(Date.now() + 30 * 60 * 1000),
 		totalResponses: allAnswers.length,
+		totalSessions: null, // requires session_id on answers
+		neitherRate,
+		avgResponseTimeMs,
+		flacWinRate: codecWinRates['flac'] ?? null,
+		flacComparisons: codecTotal['flac'] ?? null,
+		opusWinRate: codecWinRates['opus'] ?? null,
+		opusComparisons: codecTotal['opus'] ?? null,
+		aacWinRate: codecWinRates['aac'] ?? null,
+		aacComparisons: codecTotal['aac'] ?? null,
+		mp3WinRate: codecWinRates['mp3'] ?? null,
+		mp3Comparisons: codecTotal['mp3'] ?? null,
+		bitrateLosslessWinRate,
+		bitrateHighWinRate,
+		bitrateMidWinRate,
+		bitrateLowWinRate,
+		losslessVsLossyLosslessWins: losslessVsLossyTotal > 0 ? losslessVsLossyWins : null,
+		losslessVsLossyTotal: losslessVsLossyTotal > 0 ? losslessVsLossyTotal : null,
+		opusVsMp3OpusWins: opusVsMp3Total > 0 ? opusVsMp3OpusWins : null,
+		opusVsMp3Total: opusVsMp3Total > 0 ? opusVsMp3Total : null,
+		aacVsMp3AacWins: aacVsMp3Total > 0 ? aacVsMp3AacWins : null,
+		aacVsMp3Total: aacVsMp3Total > 0 ? aacVsMp3Total : null,
+		deviceHeadphonesCount: deviceBreakdown['headphones'] ?? null,
+		deviceSpeakersCount: deviceBreakdown['speaker'] ?? null,
+		tierBudgetCount: tierBreakdown['budget'] ?? null,
+		tierMidCount: tierBreakdown['mid'] ?? null,
+		tierPremiumCount: tierBreakdown['premium'] ?? null,
+		tierFlagshipCount: tierBreakdown['flagship'] ?? null,
+		comparisonSameGaplessCount: comparisonCounts.same_gapless,
+		comparisonSameGapCount: comparisonCounts.same_gap,
+		comparisonDifferentGaplessCount: comparisonCounts.different_gapless,
+		comparisonDifferentGapCount: comparisonCounts.different_gap,
+		codecMatchupMatrix: Object.keys(codecMatchupMatrix).length > 0 ? codecMatchupMatrix : null,
+		bitrateGapConfidence:
+			Object.keys(bitrateGapConfidence).length > 0 ? bitrateGapConfidence : null,
+		codecEquivalenceRatios:
+			Object.keys(codecEquivalenceRatios).length > 0 ? codecEquivalenceRatios : null,
+		flacVsLossyWinRates:
+			Object.keys(flacVsLossy).length > 0 ? flacVsLossy : null,
+		codecPqScores: Object.keys(codecPqScores).length > 0 ? codecPqScores : null,
+		transparencyThresholds:
+			Object.keys(transparencyThresholds).length > 0 ? transparencyThresholds : null,
+		diminishingReturnsPoints:
+			Object.keys(diminishingReturnsPoints).length > 0 ? diminishingReturnsPoints : null,
+		codecPqScoresByGenre:
+			Object.keys(codecPqScoresByGenre).length > 0 ? codecPqScoresByGenre : null,
+		crossGenreQualityTradeoff,
+		qualityVsContentByGap,
 		insights
 	});
 

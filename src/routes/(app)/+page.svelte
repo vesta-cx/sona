@@ -11,6 +11,17 @@
 	import FlacVsLossyChart from '$lib/components/flac-vs-lossy-chart.svelte';
 	import NeitherByDiffChart from '$lib/components/neither-by-diff-chart.svelte';
 	import CodecDescriptions from '$lib/components/codec-descriptions.svelte';
+	import OverallStatsDisplay from '$lib/components/overall-stats-display.svelte';
+	import CodecWinRateBarChart from '$lib/components/codec-win-rate-bar-chart.svelte';
+	import BitrateTierChart from '$lib/components/bitrate-tier-chart.svelte';
+	import DeviceDistributionChart from '$lib/components/device-distribution-chart.svelte';
+	import HeadlineMatchupsDisplay from '$lib/components/headline-matchups-display.svelte';
+	import CodecEquivalenceChart from '$lib/components/codec-equivalence-chart.svelte';
+	import CodecMatchupHeatmap from '$lib/components/codec-matchup-heatmap.svelte';
+	import ComparisonTypeDistributionChart from '$lib/components/comparison-type-distribution-chart.svelte';
+	import PqConfidenceBandChart from '$lib/components/pq-confidence-band-chart.svelte';
+	import PqSpaghettiChart from '$lib/components/pq-spaghetti-chart.svelte';
+	import GenreHeatmapChart from '$lib/components/genre-heatmap-chart.svelte';
 
 	let { data } = $props();
 
@@ -22,7 +33,9 @@
 		(insights?.codecWinRates as Record<string, number> | undefined) ?? {}
 	);
 	const btScores = $derived(
-		(insights?.bradleyTerryScores as Record<string, number> | undefined) ?? {}
+		(snapshot?.codecPqScores as Record<string, number> | undefined) ??
+			(insights?.bradleyTerryScores as Record<string, number> | undefined) ??
+			{}
 	);
 	const deviceBreakdown = $derived(
 		(insights?.deviceBreakdown as Record<string, number> | undefined) ?? {}
@@ -32,7 +45,9 @@
 	);
 	const neitherRate = $derived((insights?.neitherRate as number | undefined) ?? 0);
 	const flacVsLossy = $derived(
-		(insights?.flacVsLossy as Record<string, Record<string, number>> | undefined) ?? {}
+		(snapshot?.flacVsLossyWinRates as Record<string, Record<string, number>> | undefined) ??
+			(insights?.flacVsLossy as Record<string, Record<string, number>> | undefined) ??
+			{}
 	);
 	const neitherByBitrateDiff = $derived(
 		(insights?.neitherByBitrateDiff as Record<string, number> | undefined) ?? {}
@@ -48,10 +63,10 @@
 </script>
 
 <svelte:head>
-	<title>Quality Survey — Which audio codec sounds best?</title>
+	<title>Quality Survey — Can you hear the difference?</title>
 	<meta
 		name="description"
-		content="Help us determine which audio codecs and bitrates sound best through blind A/B comparisons."
+		content="Put your ears to the test, and help us build better streaming. Blind A/B audio comparisons."
 	/>
 </svelte:head>
 
@@ -67,19 +82,18 @@
 	<SectionContent class="flex flex-col items-center text-center">
 		<div class="mx-auto max-w-3xl">
 			<h1 class="text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
-				Which audio codec
-				<span class="text-primary">sounds best?</span>
+				Can you hear
+				<span class="text-primary">the difference?</span>
 			</h1>
 			<p class="text-muted-foreground mx-auto mt-6 max-w-2xl text-lg">
-				Help us answer the age-old audiophile question through science. Listen to blind A/B
-				comparisons and pick the one that sounds better to you. Your ears, your verdict.
+				Put your ears to the test, and help us build better streaming.
 			</p>
 			<div class="mt-8 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
 				<a
 					href="/survey/setup"
 					class="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center rounded-lg px-6 py-3 text-sm font-medium shadow-sm transition-colors"
 				>
-					Take the Survey
+					Play Now
 				</a>
 				<a
 					href="#results"
@@ -103,105 +117,150 @@
 				</p>
 			</div>
 
+			<div class="mb-8">
+				<OverallStatsDisplay
+					totalResponses={snapshot.totalResponses}
+					totalSessions={snapshot.totalSessions}
+					neitherRate={snapshot.neitherRate ?? neitherRate}
+					avgResponseTimeMs={snapshot.avgResponseTimeMs}
+				/>
+			</div>
+
 			<div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-				<StatCard.StatCard label="Total Responses" value={snapshot.totalResponses} />
-
-				{#if neitherRate > 0}
-					<StatCard.StatCard
-						label={'"Can\'t tell" rate'}
-						value={`${(neitherRate * 100).toFixed(1)}%`}
-						helper="Responses where listeners couldn't pick a winner"
+				<!-- Row 1: Codec win rates (lead) + bitrate tier -->
+				<div class="rounded-xl border bg-card p-6 md:col-span-2">
+					<CodecWinRateBarChart
+						flacWinRate={snapshot.flacWinRate}
+						flacComparisons={snapshot.flacComparisons}
+						opusWinRate={snapshot.opusWinRate}
+						opusComparisons={snapshot.opusComparisons}
+						aacWinRate={snapshot.aacWinRate}
+						aacComparisons={snapshot.aacComparisons}
+						mp3WinRate={snapshot.mp3WinRate}
+						mp3Comparisons={snapshot.mp3Comparisons}
+						codecWinRates={codecWinRates}
 					/>
-				{/if}
+				</div>
+				<div class="rounded-xl border bg-card p-6">
+					<BitrateTierChart
+						lossless={snapshot.bitrateLosslessWinRate}
+						high={snapshot.bitrateHighWinRate}
+						mid={snapshot.bitrateMidWinRate}
+						low={snapshot.bitrateLowWinRate}
+					/>
+				</div>
 
-				{#if Object.keys(codecWinRates).length > 0}
-					<StatCard.StatCard label="Codec Preference" colSpan="md:col-span-2">
-						<div class="space-y-3">
-							{#each Object.entries(codecWinRates).sort(([, a], [, b]) => b - a) as [codec, rate]}
-								<div class="flex items-center gap-3">
-									<span class="w-12 text-sm font-medium">{codec.toUpperCase()}</span>
-									<div class="bg-muted h-4 flex-1 overflow-hidden rounded-full">
-										<div
-											class="bg-primary h-full rounded-full transition-all"
-											style="width: {Math.round(rate * 100)}%"
-										></div>
-									</div>
-									<span class="text-muted-foreground w-12 text-right text-sm">
-										{Math.round(rate * 100)}%
-									</span>
-								</div>
-							{/each}
-						</div>
-					</StatCard.StatCard>
-				{/if}
+				<!-- Row 2: Headline matchups, device distribution, comparison type -->
+				<div class="rounded-xl border bg-card p-6">
+					<HeadlineMatchupsDisplay
+						losslessWins={snapshot.losslessVsLossyLosslessWins}
+						losslessTotal={snapshot.losslessVsLossyTotal}
+						opusWins={snapshot.opusVsMp3OpusWins}
+						opusTotal={snapshot.opusVsMp3Total}
+						aacWins={snapshot.aacVsMp3AacWins}
+						aacTotal={snapshot.aacVsMp3Total}
+					/>
+				</div>
+				<div class="rounded-xl border bg-card p-6">
+					<DeviceDistributionChart
+						headphonesCount={snapshot.deviceHeadphonesCount}
+						speakersCount={snapshot.deviceSpeakersCount}
+						budgetCount={snapshot.tierBudgetCount}
+						midCount={snapshot.tierMidCount}
+						premiumCount={snapshot.tierPremiumCount}
+						flagshipCount={snapshot.tierFlagshipCount}
+						deviceBreakdown={deviceBreakdown}
+					/>
+				</div>
+				<div class="rounded-xl border bg-card p-6">
+					<ComparisonTypeDistributionChart
+						sameGapless={snapshot.comparisonSameGaplessCount}
+						sameGap={snapshot.comparisonSameGapCount}
+						differentGapless={snapshot.comparisonDifferentGaplessCount}
+						differentGap={snapshot.comparisonDifferentGapCount}
+					/>
+				</div>
 
+				<!-- PQ Line Chart (main insight) -->
 				{#if Object.keys(btScores).length > 0}
-					<StatCard.StatCard
-						label="Quality Rankings"
-						helper="Bradley-Terry model scores"
-					>
-						<div class="space-y-2">
-							{#each Object.entries(btScores).sort(([, a], [, b]) => b - a) as [key, score], i}
-								<div class="flex items-center justify-between text-sm">
-									<div class="flex items-center gap-2">
-										<span class="text-muted-foreground w-5 text-xs">#{i + 1}</span>
-										<span class="font-medium">{key}</span>
-									</div>
-									<span class="text-muted-foreground">{score.toFixed(2)}</span>
-								</div>
-							{/each}
-						</div>
-					</StatCard.StatCard>
-				{/if}
-
-				{#if heatmapData.length > 0}
-					{#await import('@vesta-cx/ui/components/ui/heatmap') then { Heatmap }}
-						<StatCard.StatCard
-							label="Codec × Bitrate Win Rates"
-							colSpan="md:col-span-2 lg:col-span-3"
-						>
-							<Heatmap
-								data={heatmapData}
-								rows={[...new Set(heatmapData.map((d) => d.row))]}
-								cols={[...new Set(heatmapData.map((d) => d.col))]}
-								rowLabel="Codec"
-								colLabel="Bitrate (kbps)"
-							/>
-						</StatCard.StatCard>
-					{/await}
-				{/if}
-
-				{#if Object.keys(deviceBreakdown).length > 0}
-					<StatCard.StatCard label="Device Breakdown">
-						<div class="space-y-2">
-							{#each Object.entries(deviceBreakdown).sort(([, a], [, b]) => b - a) as [device, count]}
-								<div class="flex items-center justify-between text-sm">
-									<span>{device}</span>
-									<span class="text-muted-foreground">{count}</span>
-								</div>
-							{/each}
-						</div>
-					</StatCard.StatCard>
-				{/if}
-
-				<!-- PQ (Perceptual Quality) Line Chart -->
-				{#if Object.keys(btScores).length > 0}
-					<div class="bg-card rounded-xl border p-6 md:col-span-2 lg:col-span-3">
+					<div class="rounded-xl border bg-card p-6 md:col-span-2 lg:col-span-3">
 						<PqLineChart scores={btScores} />
 					</div>
 				{/if}
 
-				<!-- FLAC vs Lossy Transparency -->
+				<!-- Codec matchup heatmap -->
+				{#if snapshot?.codecMatchupMatrix && Object.keys(snapshot.codecMatchupMatrix).length > 0}
+					<div class="rounded-xl border bg-card p-6 md:col-span-2 lg:col-span-3">
+						<CodecMatchupHeatmap matrix={snapshot.codecMatchupMatrix} />
+					</div>
+				{:else if heatmapData.length > 0}
+					{#await import('@vesta-cx/ui/components/ui/heatmap') then { Heatmap }}
+						<div class="rounded-xl border bg-card p-6 md:col-span-2 lg:col-span-3">
+							<h3 class="text-muted-foreground text-sm font-medium">Codec × Bitrate Win Rates</h3>
+							<div class="mt-4">
+								<Heatmap
+									data={heatmapData}
+									rows={[...new Set(heatmapData.map((d) => d.row))]}
+									cols={[...new Set(heatmapData.map((d) => d.col))]}
+									rowLabel="Codec"
+									colLabel="Bitrate (kbps)"
+								/>
+							</div>
+						</div>
+					{/await}
+				{/if}
+
+				<!-- Equivalence + FLAC vs lossy + Neither -->
+				{#if snapshot?.codecEquivalenceRatios && Object.keys(snapshot.codecEquivalenceRatios).length > 0}
+					<div class="rounded-xl border bg-card p-6">
+						<CodecEquivalenceChart ratios={snapshot.codecEquivalenceRatios} />
+					</div>
+				{/if}
 				{#if Object.keys(flacVsLossy).length > 0}
-					<div class="bg-card rounded-xl border p-6 md:col-span-2">
+					<div class="rounded-xl border bg-card p-6">
 						<FlacVsLossyChart data={flacVsLossy} />
 					</div>
 				{/if}
-
-				<!-- Neither by Bitrate Difference -->
 				{#if Object.keys(neitherByBitrateDiff).length > 0}
-					<div class="bg-card rounded-xl border p-6">
+					<div class="rounded-xl border bg-card p-6">
 						<NeitherByDiffChart data={neitherByBitrateDiff} />
+					</div>
+				{/if}
+
+				{#if Object.keys(btScores).length > 0}
+					<div class="rounded-xl border bg-card p-6">
+						<StatCard.StatCard
+							label="Quality Rankings"
+							helper="Bradley-Terry model scores"
+						>
+							<div class="space-y-2">
+								{#each Object.entries(btScores).sort(([, a], [, b]) => b - a) as [key, score], i}
+									<div class="flex items-center justify-between text-sm">
+										<div class="flex items-center gap-2">
+											<span class="text-muted-foreground w-5 text-xs">#{i + 1}</span>
+											<span class="font-medium">{key}</span>
+										</div>
+										<span class="text-muted-foreground">{score.toFixed(2)}</span>
+									</div>
+								{/each}
+							</div>
+						</StatCard.StatCard>
+					</div>
+				{/if}
+
+				<!-- Genre visualizations -->
+				{#if snapshot?.codecPqScoresByGenre && Object.keys(snapshot.codecPqScoresByGenre).length > 0}
+					<div class="rounded-xl border bg-card p-6 md:col-span-2">
+						<PqConfidenceBandChart scoresByGenre={snapshot.codecPqScoresByGenre} />
+					</div>
+					<div class="rounded-xl border bg-card p-6 md:col-span-2">
+						<PqSpaghettiChart
+							scoresByGenre={snapshot.codecPqScoresByGenre}
+							codec="opus"
+						/>
+					</div>
+					<div class="rounded-xl border bg-card p-6 md:col-span-2 lg:col-span-3">
+						<GenreHeatmapChart scoresByGenre={snapshot.codecPqScoresByGenre} />
 					</div>
 				{/if}
 			</div>
@@ -230,7 +289,7 @@
 							href="/survey/setup"
 							class="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center rounded-lg px-6 py-3 text-sm font-medium shadow-sm transition-colors"
 						>
-							Be one of the first to contribute
+							Play the first round
 						</a>
 					</Empty.Content>
 				</Empty.Empty>

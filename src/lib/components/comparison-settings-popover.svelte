@@ -1,8 +1,18 @@
 <script lang="ts">
 	import * as CheckboxWithInfo from '@vesta-cx/ui/components/ui/checkbox-with-info';
 	import * as Popover from '@vesta-cx/ui/components/ui/popover';
-	import { ThemeSwitcher } from '@vesta-cx/ui/components/utils/theme-switcher';
+	import { settingsStore } from '@vesta-cx/utils/cookies';
+	import SunIcon from '@lucide/svelte/icons/sun';
+	import MoonIcon from '@lucide/svelte/icons/moon';
+	import MonitorIcon from '@lucide/svelte/icons/monitor';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
+
+	type Theme = 'light' | 'dark' | 'auto';
+	const THEME_OPTIONS: { value: Theme; label: string; Icon: typeof SunIcon }[] = [
+		{ value: 'light', label: 'Light', Icon: SunIcon },
+		{ value: 'dark', label: 'Dark', Icon: MoonIcon },
+		{ value: 'auto', label: 'System', Icon: MonitorIcon }
+	];
 
 	let {
 		enabledModes,
@@ -23,6 +33,14 @@
 		transitionTooltips: Record<string, string>;
 		modes?: string[];
 	} = $props();
+
+	let theme = $state<Theme>('auto');
+	$effect(() => {
+		const unsub = settingsStore.subscribe((s) => {
+			theme = (s?.theme as Theme) ?? 'auto';
+		});
+		return unsub;
+	});
 </script>
 
 <Popover.Root>
@@ -33,8 +51,24 @@
 		<SettingsIcon class="size-5" />
 	</Popover.Trigger>
 	<Popover.Content class="w-72 p-4" align="start" side="top">
-		<div class="mb-4">
-			<ThemeSwitcher.Root variant="inline" class="w-full" />
+		<div class="mb-4 flex flex-col gap-2">
+			<p class="text-muted-foreground text-sm font-medium">Theme</p>
+			<div class="flex gap-1 rounded-lg border border-border p-1">
+				{#each THEME_OPTIONS as { value: optValue, label, Icon } (optValue)}
+					<button
+						type="button"
+						onclick={() => settingsStore.setKey('theme', optValue)}
+						class="flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors {theme === optValue
+							? 'bg-primary text-primary-foreground'
+							: 'text-muted-foreground hover:bg-muted hover:text-foreground'}"
+						aria-pressed={theme === optValue}
+						aria-label="Set theme to {label}"
+					>
+						<Icon class="size-3.5" />
+						{label}
+					</button>
+				{/each}
+			</div>
 		</div>
 		<p class="text-muted-foreground mb-3 text-sm font-medium">
 			Comparison modes

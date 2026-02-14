@@ -1,12 +1,16 @@
 <script lang="ts">
 	/**
 	 * Perceptual Quality (PQ) line chart from Bradley-Terry scores.
-	 * X-axis: bitrate (kbps), Y-axis: normalized PQ score (0–100%).
+	 * Uses LayerChart LineChart. X-axis: bitrate (kbps), Y-axis: normalized PQ (0–100%).
 	 * One line per codec; shows diminishing returns and cross-codec equivalence.
 	 */
-	interface DataPoint {
+	import { browser } from '$app/environment';
+	import { LineChart } from 'layerchart';
+	import { ChartRoot } from '@vesta-cx/ui/components/ui/chart';
+
+	interface ChartRow {
 		bitrate: number;
-		pq: number;
+		[key: string]: number;
 	}
 
 	let {
@@ -26,8 +30,10 @@
 		mp3: 'oklch(0.55 0.2 0)'
 	};
 
-	const series = $derived.by(() => {
-		const pointsByCodec: Record<string, DataPoint[]> = {};
+	const LOSSY_CODECS = ['opus', 'aac', 'mp3'];
+
+	const { data, series, hasFlacReference, flacColor } = $derived.by(() => {
+		const pointsByCodec: Record<string, Array<{ bitrate: number; pq: number }>> = {};
 		const allScores = Object.values(scores);
 		const maxScore = Math.max(...allScores, 1);
 
@@ -45,44 +51,84 @@
 			arr.sort((a, b) => a.bitrate - b.bitrate);
 		}
 
-		return Object.entries(pointsByCodec)
-			.filter(([, pts]) => pts.length > 0)
-			.map(([codec, pts]) => ({ codec, points: pts }));
-	});
+		const hasFlac = (pointsByCodec['flac']?.length ?? 0) > 0;
+		const flacCol = codecColors['flac'] ?? DEFAULT_COLORS['flac'] ?? 'currentColor';
 
-	const width = 400;
-	const height = 240;
-	const padding = { top: 20, right: 20, bottom: 36, left: 44 };
+		const codecs = Object.keys(pointsByCodec).filter(
+			(c) => (pointsByCodec[c]?.length ?? 0) > 0 && LOSSY_CODECS.includes(c)
+		);
+		if (codecs.length === 0 && !hasFlac) {
+			return {
+				data: [] as ChartRow[],
+				series: [],
+				hasFlacReference: false,
+				flacColor: flacCol
+			};
+		}
+
+		const bitrateSet = new Set<number>();
+		for (const pts of Object.values(pointsByCodec)) {
+			for (const p of pts ?? []) {
+				bitrateSet.add(p.bitrate);
+			}
+		}
+		if (hasFlac) {
+			bitrateSet.add(0);
+			bitrateSet.add(320);
+		}
+		const bitrates = [...bitrateSet].sort((a, b) => a - b);
+
+		const chartData: ChartRow[] = bitrates.map((bitrate) => {
+			const row: ChartRow = { bitrate };
+			for (const codec of codecs) {
+				const pt = pointsByCodec[codec]?.find((p) => p.bitrate === bitrate);
+				row[codec] = pt?.pq ?? 0;
+			}
+			if (hasFlac) {
+				row['flac'] = 100;
+			}
+			return row;
+		});
+
+		const chartSeries = [
+			...codecs.map((codec) => ({
+				key: codec,
+				label: codec.charAt(0).toUpperCase() + codec.slice(1),
+				value: (d: ChartRow) => d[codec] as number,
+				color: codecColors[codec] ?? DEFAULT_COLORS[codec] ?? 'currentColor'
+			})),
+			...(hasFlac
+				? [
+						{
+							key: 'flac',
+							label: 'FLAC',
+							value: (d: ChartRow) => d['flac'] as number,
+							color: flacCol,
+							props: {
+								fill: 'none',
+								stroke: flacCol,
+								strokeWidth: 1,
+								strokeOpacity: 0.8,
+								'stroke-dasharray': '6 4'
+							}
+						}
+					]
+				: [])
+		];
+
+		return {
+			data: chartData,
+			series: chartSeries,
+			hasFlacReference: hasFlac,
+			flacColor: flacCol
+		};
+	});
 
 	const xDomain = $derived.by(() => {
-		const allBitrates = series.flatMap((s) => s.points.map((p) => p.bitrate));
-		const min = Math.min(0, ...allBitrates);
-		const max = Math.max(320, ...allBitrates);
-		return [min, max];
+		if (data.length === 0) return [0, 320];
+		const bitrates = data.map((d) => d.bitrate);
+		return [Math.min(0, ...bitrates), Math.max(320, ...bitrates)];
 	});
-
-	const xScale = (v: number) =>
-		padding.left +
-		((v - xDomain[0]) / (xDomain[1] - xDomain[0])) * (width - padding.left - padding.right);
-	const yScale = (v: number) =>
-		padding.top +
-		height -
-		padding.top -
-		padding.bottom -
-		(v / 100) * (height - padding.top - padding.bottom);
-
-	const pathForSeries = (points: DataPoint[]) => {
-		if (points.length === 0) return '';
-		const first = points[0];
-		let d = `M ${xScale(first.bitrate)} ${yScale(first.pq)}`;
-		for (let i = 1; i < points.length; i++) {
-			d += ` L ${xScale(points[i].bitrate)} ${yScale(points[i].pq)}`;
-		}
-		return d;
-	};
-
-	const xTicks = [0, 64, 128, 192, 256, 320].filter((t) => t >= xDomain[0] && t <= xDomain[1]);
-	const yTicks = [0, 25, 50, 75, 100];
 </script>
 
 <div class={className}>
@@ -90,113 +136,85 @@
 	<p class="text-muted-foreground mt-0.5 text-xs">
 		Bradley-Terry scores (normalized). Higher = more preferred. Where curves flatten ≈ diminishing returns.
 	</p>
-	<svg
-		viewBox="0 0 {width} {height}"
-		class="mt-4 w-full max-w-full"
-		aria-label="Perceptual quality curves by codec and bitrate"
-	>
-		<!-- Grid -->
-		{#each yTicks.slice(1, -1) as tick}
-			<line
-				x1={padding.left}
-				y1={yScale(tick)}
-				x2={width - padding.right}
-				y2={yScale(tick)}
-				class="stroke-border"
-				stroke-width="0.5"
-				stroke-dasharray="4"
-			/>
-		{/each}
-		{#each xTicks.slice(1, -1) as tick}
-			<line
-				x1={xScale(tick)}
-				y1={padding.top}
-				x2={xScale(tick)}
-				y2={height - padding.bottom}
-				class="stroke-border"
-				stroke-width="0.5"
-				stroke-dasharray="4"
-			/>
-		{/each}
-
-		<!-- 50% reference -->
-		<line
-			x1={padding.left}
-			y1={yScale(50)}
-			x2={width - padding.right}
-			y2={yScale(50)}
-			class="stroke-muted-foreground/40"
-			stroke-width="1"
-			stroke-dasharray="6"
-		/>
-
-		<!-- Lines -->
-		{#each series as { codec, points } (codec)}
-			{@const color = codecColors[codec] ?? DEFAULT_COLORS[codec] ?? 'currentColor'}
-			<path
-				d={pathForSeries(points)}
-				fill="none"
-				stroke={color}
-				stroke-width="2"
-				stroke-linecap="round"
-				stroke-linejoin="round"
-			/>
-		{/each}
-
-		<!-- Axes -->
-		<line
-			x1={padding.left}
-			y1={height - padding.bottom}
-			x2={width - padding.right}
-			y2={height - padding.bottom}
-			class="stroke-foreground"
-			stroke-width="1"
-		/>
-		<line
-			x1={padding.left}
-			y1={padding.top}
-			x2={padding.left}
-			y2={height - padding.bottom}
-			class="stroke-foreground"
-			stroke-width="1"
-		/>
-
-		<!-- X labels -->
-		{#each xTicks as tick}
-			<text
-				x={xScale(tick)}
-				y={height - 8}
-				class="fill-muted-foreground text-[10px]"
-				text-anchor="middle"
-			>
-				{tick === 0 ? 'FLAC' : tick}
-			</text>
-		{/each}
-
-		<!-- Y labels -->
-		{#each yTicks as tick}
-			<text
-				x={padding.left - 6}
-				y={yScale(tick) + 3}
-				class="fill-muted-foreground text-[10px]"
-				text-anchor="end"
-			>
-				{tick}%
-			</text>
-		{/each}
-	</svg>
-
-	<!-- Legend -->
-	<div class="mt-2 flex flex-wrap gap-3 text-xs">
-		{#each series as { codec } (codec)}
-			{@const color = codecColors[codec] ?? DEFAULT_COLORS[codec] ?? 'currentColor'}
-			<div class="flex items-center gap-1.5">
-				<span
-					class="inline-block size-2.5 rounded-full"
-					style="background-color: {color}"
-				></span>
-				<span class="capitalize">{codec}</span>
+	{#if data.length > 0 && (series.length > 0 || hasFlacReference)}
+		{#if browser}
+			<ChartRoot class="mt-4 min-h-60 w-full overflow-visible" aspectRatio="2/1">
+				<LineChart
+					{data}
+					x="bitrate"
+					{series}
+					yDomain={[0, 100]}
+					{xDomain}
+					padding={{ top: 16, right: 24, bottom: 32, left: 24 }}
+					tooltip={true}
+					grid={true}
+					legend={false}
+					points={false}
+					props={{
+						spline: {
+							fill: 'none',
+							strokeWidth: 1.5
+						},
+						tooltip: {
+							hideTotal: true,
+							root: {
+								variant: 'none',
+								classes: {
+									container:
+										'bg-card border border-border rounded-lg shadow-sm text-card-foreground py-2 px-3 text-sm'
+								}
+							},
+							list: {
+								class: 'grid-cols-1 gap-y-0.5'
+							},
+							header: {
+								classes: { root: 'mb-0.5 pb-0.5' }
+							},
+							item: {
+								classes: {
+									root: '!flex flex-row items-center justify-between gap-x-4',
+									label: 'flex items-center gap-2 shrink-0',
+									value: 'text-right tabular-nums shrink-0'
+								}
+							}
+						},
+						xAxis: {
+							fontSize: 10,
+							tickLabelProps: { fill: 'var(--color-muted-foreground)' }
+						},
+						yAxis: {
+							fontSize: 10,
+							tickLabelProps: { fill: 'var(--color-muted-foreground)' }
+						}
+					}}
+				/>
+			</ChartRoot>
+		{:else}
+			<div class="text-muted-foreground mt-4 flex h-60 items-center justify-center rounded-lg border border-dashed text-xs">
+				Loading chart…
 			</div>
-		{/each}
-	</div>
+		{/if}
+
+		<!-- Legend -->
+		<div class="mt-2 flex flex-wrap gap-3 text-[11px]">
+			{#each series as s (s.key)}
+				<div class="flex items-center gap-1.5">
+					{#if s.key === 'flac'}
+						<span
+							class="inline-block w-4 border-b-2 border-dashed"
+							style="border-color: {s.color}"
+						></span>
+					{:else}
+						<span
+							class="inline-block size-2.5 rounded-full"
+							style="background-color: {s.color}"
+						></span>
+					{/if}
+					<span>{s.label}</span>
+				</div>
+			{/each}
+		</div>
+	{:else}
+		<p class="text-muted-foreground mt-4 text-xs">No comparison data yet.</p>
+	{/if}
 </div>

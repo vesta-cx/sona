@@ -582,11 +582,11 @@
 			<button
 				type="button"
 				class={cn(
-					'h-[50vh] w-full border-2 border-red-500/40 transition-all md:h-screen md:w-[50vw]',
+					'h-[50vh] w-full border-2 border-red-500/55 transition-all md:h-screen md:w-[50vw]',
 					'[mask-image:linear-gradient(white,white),radial-gradient(circle_44px_at_50%_100%,white,transparent)] [mask-composite:subtract] [mask-size:100%_100%,100%_100%] [mask-position:0_0,0_0] [mask-repeat:no-repeat,no-repeat]',
 					'md:[mask-image:linear-gradient(white,white),radial-gradient(circle_44px_at_100%_50%,white,transparent)]',
-					'hover:bg-red-500/20 focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:ring-inset',
-					selection === 'a' ? 'bg-red-500/15' : 'bg-red-500/8',
+					'focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:ring-inset',
+					selection === 'a' ? 'bg-red-500/28 hover:bg-red-500/36' : 'bg-red-500/34 hover:bg-red-500/50',
 					selection !== 'a' && 'opacity-50'
 				)}
 				onclick={() => handleSelect('a')}
@@ -597,11 +597,11 @@
 			<button
 				type="button"
 				class={cn(
-					'h-[50vh] w-full border-2 border-blue-500/40 transition-all md:h-screen md:w-[50vw]',
+					'h-[50vh] w-full border-2 border-blue-500/55 transition-all md:h-screen md:w-[50vw]',
 					'[mask-image:linear-gradient(white,white),radial-gradient(circle_44px_at_50%_0%,white,transparent)] [mask-composite:subtract] [mask-size:100%_100%,100%_100%] [mask-position:0_0,0_0] [mask-repeat:no-repeat,no-repeat]',
 					'md:[mask-image:linear-gradient(white,white),radial-gradient(circle_44px_at_0%_50%,white,transparent)]',
-					'hover:bg-blue-500/20 focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:ring-inset',
-					selection === 'b' ? 'bg-blue-500/15' : 'bg-blue-500/8',
+					'focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:ring-inset',
+					selection === 'b' ? 'bg-blue-500/28 hover:bg-blue-500/36' : 'bg-blue-500/34 hover:bg-blue-500/50',
 					selection !== 'b' && 'opacity-50'
 				)}
 				onclick={() => handleSelect('b')}
@@ -656,17 +656,19 @@
 					<button
 						type="button"
 						class={cn(
-							'relative flex size-20 items-center justify-center rounded-full border-2 border-orange-500/40 transition-all',
+							'relative flex size-20 items-center justify-center rounded-full border-2 transition-all',
 							'bg-card focus-visible:ring-ring/50 focus-visible:ring-2',
-							'after:pointer-events-none after:absolute after:inset-0 after:rounded-full after:bg-orange-500/12 after:content-[""]',
-							selection === 'neither' && 'shadow-md after:bg-orange-500/20'
+							'after:pointer-events-none after:absolute after:inset-0 after:rounded-full after:bg-transparent after:content-[""]',
+							selection === 'neither'
+								? 'border-orange-500/55 shadow-md after:bg-orange-500/18 hover:after:bg-orange-500/12'
+								: 'border-border hover:border-orange-500/30 hover:after:bg-orange-500/12'
 						)}
 						onclick={() => handleSelect('neither')}
 						aria-label="Select neither candidate"
 						aria-pressed={selection === 'neither'}
 						disabled={confirmed}
 					>
-						<span class="relative z-10 text-muted-foreground text-sm font-medium">N</span>
+						<span class="relative z-10 text-xl leading-none text-muted-foreground" aria-hidden="true">🤷</span>
 					</button>
 				</div>
 				<!-- Volume: row 3 (bottom right, desktop only) -->
