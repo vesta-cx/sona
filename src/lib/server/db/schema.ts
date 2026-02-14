@@ -1,5 +1,5 @@
 import { relations } from 'drizzle-orm';
-import { integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 // ── Enums (stored as text in SQLite) ──────────────────────────────────────────
 
@@ -20,6 +20,20 @@ export type SelectedOption = (typeof SELECTED_OPTIONS)[number];
 
 export const PAIRING_TYPES = ['same_song', 'different_song', 'placebo'] as const;
 export type PairingType = (typeof PAIRING_TYPES)[number];
+
+/** Canonical genres for PQ-by-genre analysis. Prefer these when tagging sources. */
+export const GENRES = [
+	'classical',
+	'electronic',
+	'jazz',
+	'hip-hop',
+	'rock',
+	'pop',
+	'ambient',
+	'folk',
+	'other'
+] as const;
+export type Genre = (typeof GENRES)[number];
 
 export const TRANSITION_MODES = [
 	'gapless',
@@ -67,7 +81,10 @@ export const sourceFiles = sqliteTable('source_files', {
 	streamUrl: text('stream_url'),
 	artist: text('artist'),
 	artistUrl: text('artist_url'),
+	/** Primary genre. Prefer values from GENRES for segment analysis. */
 	genre: text('genre'),
+	/** Secondary genre (e.g. "jazz" for "jazz-fusion"). Enables richer genre-based PQ. */
+	genreSecondary: text('genre_secondary'),
 	duration: integer('duration').notNull() // total duration in ms
 });
 
@@ -137,7 +154,85 @@ export const resultSnapshots = sqliteTable('result_snapshots', {
 		.primaryKey()
 		.$defaultFn(() => new Date()),
 	expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+	// Overall
 	totalResponses: integer('total_responses').notNull(),
+	totalSessions: integer('total_sessions'),
+	neitherRate: real('neither_rate'),
+	avgResponseTimeMs: integer('avg_response_time_ms'),
+	// Codec win rates
+	flacWinRate: real('flac_win_rate'),
+	flacComparisons: integer('flac_comparisons'),
+	opusWinRate: real('opus_win_rate'),
+	opusComparisons: integer('opus_comparisons'),
+	aacWinRate: real('aac_win_rate'),
+	aacComparisons: integer('aac_comparisons'),
+	mp3WinRate: real('mp3_win_rate'),
+	mp3Comparisons: integer('mp3_comparisons'),
+	// Bitrate tier win rates
+	bitrateLosslessWinRate: real('bitrate_lossless_win_rate'),
+	bitrateHighWinRate: real('bitrate_high_win_rate'),
+	bitrateMidWinRate: real('bitrate_mid_win_rate'),
+	bitrateLowWinRate: real('bitrate_low_win_rate'),
+	// Headline matchups
+	losslessVsLossyLosslessWins: integer('lossless_vs_lossy_lossless_wins'),
+	losslessVsLossyTotal: integer('lossless_vs_lossy_total'),
+	opusVsMp3OpusWins: integer('opus_vs_mp3_opus_wins'),
+	opusVsMp3Total: integer('opus_vs_mp3_total'),
+	aacVsMp3AacWins: integer('aac_vs_mp3_aac_wins'),
+	aacVsMp3Total: integer('aac_vs_mp3_total'),
+	// Device breakdown
+	deviceHeadphonesCount: integer('device_headphones_count'),
+	deviceSpeakersCount: integer('device_speakers_count'),
+	tierBudgetCount: integer('tier_budget_count'),
+	tierMidCount: integer('tier_mid_count'),
+	tierPremiumCount: integer('tier_premium_count'),
+	tierFlagshipCount: integer('tier_flagship_count'),
+	// Comparison type distribution
+	comparisonSameGaplessCount: integer('comparison_same_gapless_count'),
+	comparisonSameGapCount: integer('comparison_same_gap_count'),
+	comparisonDifferentGaplessCount: integer('comparison_different_gapless_count'),
+	comparisonDifferentGapCount: integer('comparison_different_gap_count'),
+	// Complex matrices (JSON)
+	codecMatchupMatrix: text('codec_matchup_matrix', { mode: 'json' }).$type<
+		Record<
+			string,
+			Record<
+				string,
+				{ a_wins: number; b_wins: number; neither: number }
+			>
+		>
+	>(),
+	bitrateGapConfidence: text('bitrate_gap_confidence', { mode: 'json' }).$type<
+		Record<string, { neither_rate: number; sample_size: number }>
+	>(),
+	codecEquivalenceRatios: text('codec_equivalence_ratios', { mode: 'json' }).$type<
+		Record<string, number>
+	>(),
+	// FLAC vs lossy: FLAC win rate by codec and bitrate
+	flacVsLossyWinRates: text('flac_vs_lossy_win_rates', { mode: 'json' }).$type<
+		Record<string, Record<string, number>>
+	>(),
+	// PQ (Perceptual Quality) scores from Bradley-Terry
+	codecPqScores: text('codec_pq_scores', { mode: 'json' }).$type<Record<string, number>>(),
+	transparencyThresholds: text('transparency_thresholds', { mode: 'json' }).$type<
+		Record<string, number>
+	>(), // bitrate where PQ > 95% per codec
+	diminishingReturnsPoints: text('diminishing_returns_points', { mode: 'json' }).$type<
+		Record<string, number>
+	>(), // bitrate where slope drops per codec
+	/** PQ scores per codec+bitrate, segmented by genre. { "opus_128": { "classical": 82, "electronic": 91, ... } } */
+	codecPqScoresByGenre: text('codec_pq_scores_by_genre', { mode: 'json' }).$type<
+		Record<string, Record<string, number>>
+	>(),
+	/** Quality vs content preference (different-song comparisons). Do NOT enable on homepage until genre metadata is richer. */
+	crossGenreQualityTradeoff: text('cross_genre_quality_tradeoff', { mode: 'json' }).$type<{
+		quality_wins: number;
+		content_wins: number;
+		quality_threshold?: number;
+	} | null>(),
+	qualityVsContentByGap: text('quality_vs_content_by_gap', { mode: 'json' }).$type<
+		Record<string, { quality_wins: number; content_wins: number }> | null
+	>(),
 	insights: text('insights', { mode: 'json' }).$type<Record<string, unknown>>()
 });
 
