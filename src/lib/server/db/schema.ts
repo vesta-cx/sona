@@ -127,6 +127,8 @@ export const answers = sqliteTable('answers', {
 	createdAt: integer('created_at', { mode: 'timestamp' })
 		.notNull()
 		.$defaultFn(() => new Date()),
+	/** Anonymous session UUID. Enables "my data vs global" comparisons. Portable: can be mapped to user_id via user_sessions when auth is added. */
+	sessionId: text('session_id'),
 	deviceId: text('device_id')
 		.notNull()
 		.references(() => listeningDevices.id),
@@ -147,6 +149,17 @@ export const answers = sqliteTable('answers', {
 export const surveyConfig = sqliteTable('survey_config', {
 	key: text('key').primaryKey(),
 	value: text('value').notNull()
+});
+
+/** Easter egg messages shown in round summary at randomized intervals. Stored in DB to keep them out of source. */
+export const easterEggMessages = sqliteTable('easter_egg_messages', {
+	id: text('id')
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	message: text('message').notNull(),
+	createdAt: integer('created_at', { mode: 'timestamp' })
+		.notNull()
+		.$defaultFn(() => new Date())
 });
 
 export const resultSnapshots = sqliteTable('result_snapshots', {

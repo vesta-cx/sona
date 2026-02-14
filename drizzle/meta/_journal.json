@@ -29,6 +29,20 @@
       "when": 1771051142175,
       "tag": "0003_great_komodo",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1771059313913,
+      "tag": "0004_sweet_impossible_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1771060834303,
+      "tag": "0005_lively_thunderball",
+      "breakpoints": true
     }
   ]
 }
