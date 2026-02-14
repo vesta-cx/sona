@@ -23,8 +23,9 @@ pnpm --filter quality-survey dev
 # Generate Drizzle migrations
 pnpm --filter quality-survey db:generate
 
-# Apply migrations to local D1
-wrangler d1 migrations apply vesta-quality-survey-db --local
+# Apply migrations (Wrangler D1; drizzle-kit migrate doesn't work with D1)
+pnpm --filter quality-survey db:migrate:local   # local D1
+pnpm --filter quality-survey db:migrate       # remote D1
 
 # Run tests
 pnpm --filter quality-survey test
