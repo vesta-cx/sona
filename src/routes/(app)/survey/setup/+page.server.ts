@@ -12,19 +12,50 @@ function normalize(s: string): string {
 		.replace(/\s+/g, ' ');
 }
 
-export const load: PageServerLoad = async ({ cookies, platform }) => {
+function formatDeviceSubtitle(device: {
+	deviceType: string;
+	connectionType: string;
+	priceTier: string;
+}): string {
+	const type = device.deviceType === 'speaker' ? 'Speaker(s)' : 'Headphones';
+	const conn = device.connectionType.charAt(0).toUpperCase() + device.connectionType.slice(1);
+	const tier = device.priceTier.charAt(0).toUpperCase() + device.priceTier.slice(1);
+	return `${type} · ${conn} · ${tier}`;
+}
+
+export const load: PageServerLoad = async ({ cookies, platform, url }) => {
 	const deviceId = cookies.get('device_id');
+	const forceChange = url.searchParams.get('change') === '1';
 
-	if (deviceId && platform) {
+	let existingDevice: {
+		id: string;
+		deviceType: string;
+		connectionType: string;
+		brand: string;
+		model: string;
+		priceTier: string;
+		subtitle: string;
+	} | null = null;
+
+	if (deviceId && platform && !forceChange) {
 		const db = getDb(platform);
-		const existing = await db
-			.select()
+		const device = await db
+			.select({
+				id: listeningDevices.id,
+				deviceType: listeningDevices.deviceType,
+				connectionType: listeningDevices.connectionType,
+				brand: listeningDevices.brand,
+				model: listeningDevices.model,
+				priceTier: listeningDevices.priceTier
+			})
 			.from(listeningDevices)
-			.where(eq(listeningDevices.id, deviceId))
+			.where(and(eq(listeningDevices.id, deviceId), isNotNull(listeningDevices.approvedAt)))
 			.get();
-
-		if (existing) {
-			redirect(302, '/survey/play');
+		if (device) {
+			existingDevice = {
+				...device,
+				subtitle: formatDeviceSubtitle(device)
+			};
 		}
 	}
 
@@ -48,7 +79,8 @@ export const load: PageServerLoad = async ({ cookies, platform }) => {
 		deviceTypes: DEVICE_TYPES,
 		connectionTypes: CONNECTION_TYPES,
 		priceTiers: PRICE_TIERS,
-		approvedDevices
+		approvedDevices,
+		existingDevice
 	};
 };
 

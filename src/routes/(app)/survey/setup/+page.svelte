@@ -98,6 +98,31 @@
 			</div>
 		{/if}
 
+		{#if data.existingDevice && !resolvedDevice}
+			<!-- Summary view: device from cookie, confirm to start or change -->
+			<form method="POST" use:enhance class="space-y-4">
+				<input type="hidden" name="device_id" value={data.existingDevice.id} />
+				<div class="border-input rounded-lg border bg-muted/30 p-4 space-y-1">
+					<p class="font-medium">{data.existingDevice.brand} {data.existingDevice.model}</p>
+					<p class="text-muted-foreground text-sm">
+						{data.existingDevice.subtitle}
+					</p>
+					<p class="text-muted-foreground text-xs mt-2">Device matched from your selection. Click below to start.</p>
+					<a
+						href="/survey/setup?change=1"
+						class="text-muted-foreground hover:text-foreground mt-2 inline-block text-xs underline"
+					>
+						Change device
+					</a>
+				</div>
+				<button
+					type="submit"
+					class="bg-primary text-primary-foreground hover:bg-primary/90 w-full rounded-lg px-4 py-3 text-sm font-medium shadow-sm transition-colors"
+				>
+					Start the Survey
+				</button>
+			</form>
+		{:else}
 		<form method="POST" use:enhance class="space-y-4">
 			{#if resolvedDevice}
 				<input type="hidden" name="device_id" value={resolvedDevice.id} />
@@ -268,5 +293,6 @@
 				Start the Survey
 			</button>
 		</form>
+		{/if}
 	</div>
 </div>

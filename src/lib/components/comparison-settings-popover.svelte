@@ -100,5 +100,11 @@
 		>
 			Save
 		</button>
+		<a
+			href="/survey/setup"
+			class="text-muted-foreground hover:text-foreground mt-2 flex w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-sm transition-colors"
+		>
+			Change device
+		</a>
 	</Popover.Content>
 </Popover.Root>
