@@ -1,8 +1,74 @@
 <script lang="ts">
-	import { enhance } from '$app/forms';
+	import { deserialize, enhance } from '$app/forms';
+	import { invalidateAll } from '$app/navigation';
+	import { Checkbox } from '@vesta-cx/ui/components/ui/checkbox';
+	import UploadProgressToast from '$lib/components/upload-progress-toast.svelte';
+	import { uploadProgress } from '$lib/stores/upload-progress';
+	import CircleCheck from '@lucide/svelte/icons/circle-check';
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
+	import Loader2 from '@lucide/svelte/icons/loader-2';
+	import Trash2 from '@lucide/svelte/icons/trash-2';
+	import Upload from '@lucide/svelte/icons/upload';
 	import { parseBlob } from 'music-metadata';
+	import { toast } from 'svelte-sonner';
 
 	let { data, form } = $props();
+
+	let selectedIds = $state<Set<string>>(new Set());
+	let expandedIds = $state<Set<string>>(new Set());
+	let uploadingSourceId = $state<string | null>(null);
+	const allSourceIds = $derived(data.sources.map((s) => s.id));
+	const allSelected = $derived(
+		data.sources.length > 0 && data.sources.every((s) => selectedIds.has(s.id))
+	);
+	const someSelected = $derived(selectedIds.size > 0);
+	const isIndeterminate = $derived(someSelected && !allSelected);
+
+	const handleSelectAllChange = (checked: boolean | 'indeterminate') => {
+		if (checked === true || checked === 'indeterminate') {
+			selectedIds = new Set(allSourceIds);
+		} else {
+			selectedIds = new Set();
+		}
+	};
+
+	const handleSelectChange = (id: string, checked: boolean | 'indeterminate') => {
+		const next = new Set(selectedIds);
+		if (checked === true) next.add(id);
+		else next.delete(id);
+		selectedIds = next;
+	};
+
+	const handleToggleExpanded = (id: string) => {
+		const next = new Set(expandedIds);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		expandedIds = next;
+	};
+
+	const handleRemoveResult = (opts: { result?: { type?: string; data?: { removed?: number } }; update?: () => Promise<void> }) => {
+		if (opts?.result?.type === 'success' && opts.result?.data?.removed != null) {
+			toast.success(
+				opts.result.data.removed === 1
+					? 'Source deleted'
+					: `${opts.result.data.removed} sources deleted`
+			);
+			selectedIds = new Set();
+		}
+		opts?.update?.();
+	};
+
+	const handleApproveResult = (opts: { result?: { type?: string; data?: { approved?: number } }; update?: () => Promise<void> }) => {
+		if (opts?.result?.type === 'success' && opts.result?.data?.approved != null) {
+			toast.success(
+				opts.result.data.approved === 1
+					? 'Source approved'
+					: `${opts.result.data.approved} sources approved`
+			);
+			selectedIds = new Set();
+		}
+		opts?.update?.();
+	};
 
 	type TrackEntry = {
 		basename: string;
@@ -10,6 +76,7 @@
 		artist: string;
 		genre: string;
 		licenseUrl: string;
+		streamUrl: string;
 		durationMs: number | null;
 		metadataSource: string | null;
 		files: File[];
@@ -18,14 +85,29 @@
 	};
 
 	const BASENAME_REGEX = /^(.+)_(flac|opus|mp3|aac)_(\d+)\.[a-z0-9]+$/i;
+	const BASENAME_FALLBACK = /^(.+)_(?:flac|opus|mp3|aac)(?:_\d+)?\.[a-z0-9]+$/i;
 
 	let showUploadDialog = $state(false);
+	let fileSelectError = $state('');
 	let sharedLicenseUrl = $state('');
+	let sharedStreamUrl = $state('');
 	let tracks = $state<TrackEntry[]>([]);
-	let fileInputRef = $state<HTMLInputElement | null>(null);
+	let directoryInputRef = $state<HTMLInputElement | null>(null);
+	let filesInputRef = $state<HTMLInputElement | null>(null);
+	let isUploading = $state(false);
 
 	const isComplete = (t: TrackEntry) => Boolean(t.title?.trim() && (t.licenseUrl?.trim() || sharedLicenseUrl?.trim()));
 	const allComplete = $derived(sharedLicenseUrl?.trim() && tracks.length > 0 && tracks.every(isComplete));
+
+	// Auto-hydrate license/stream URLs from existing sources when dialog opens
+	$effect(() => {
+		if (!showUploadDialog || data.sources.length === 0) return;
+		// Only fill when both are empty (fresh open)
+		if (sharedLicenseUrl.trim() || sharedStreamUrl.trim()) return;
+		const first = data.sources[0];
+		if (first?.licenseUrl) sharedLicenseUrl = first.licenseUrl;
+		if (first?.streamUrl != null) sharedStreamUrl = first.streamUrl;
+	});
 	const completeCount = $derived(tracks.filter(isComplete).length);
 	const incompleteCount = $derived(tracks.length - completeCount);
 
@@ -36,24 +118,50 @@
 	};
 
 	const extractBasename = (path: string): string | null => {
-		const filename = path.split('/').pop() ?? '';
-		const match = filename.match(BASENAME_REGEX);
-		return match ? match[1] ?? null : null;
+		const filename = (path.split(/[/\\]/).pop() ?? '').trim();
+		const match = filename.match(BASENAME_REGEX) ?? filename.match(BASENAME_FALLBACK);
+		console.log('[extractBasename]', {
+			path,
+			filename,
+			filenameLength: filename.length,
+			filenameBytes: [...filename].map((c) => c.codePointAt(0)),
+			match: match ? match[0] : null,
+			basename: match ? match[1] ?? null : null
+		});
+		if (match) return match[1] ?? null;
+		// Ultimate fallback: use filename stem for any audio file
+		const stem = filename.replace(/\.[a-z0-9]+$/i, '');
+		return stem ? stem : null;
 	};
 
-	const handleDirectorySelect = async (e: Event) => {
+	const handleFileSelect = async (e: Event) => {
 		const input = e.target as HTMLInputElement;
 		const files = input.files;
 		if (!files || files.length === 0) {
-			tracks = [];
+			// Don't wipe tracks when this is triggered by clearing the other input
 			return;
 		}
+		fileSelectError = '';
+		// Clear the other input after we've processed (defer to avoid its onchange wiping tracks)
+		const otherInput = input.hasAttribute('webkitdirectory') ? filesInputRef : directoryInputRef;
+		queueMicrotask(() => {
+			if (otherInput) otherInput.value = '';
+		});
 
 		const fileList = Array.from(files) as (File & { webkitRelativePath?: string })[];
 		const byBasename = new Map<string, File[]>();
 
+		console.log('[handleFileSelect]', {
+			inputType: input.hasAttribute('webkitdirectory') ? 'directory' : 'files',
+			fileCount: fileList.length,
+			files: fileList.map((f) => ({
+				name: f.name,
+				webkitRelativePath: (f as File & { webkitRelativePath?: string }).webkitRelativePath ?? '(none)'
+			}))
+		});
+
 		for (const file of fileList) {
-			const path = file.webkitRelativePath ?? file.name;
+			const path = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
 			const basename = extractBasename(path);
 			if (!basename) continue;
 
@@ -67,8 +175,8 @@
 		for (const [basename, group] of byBasename) {
 			const flacFile =
 				group.find((f) => {
-					const p = (f as File & { webkitRelativePath?: string }).webkitRelativePath ?? f.name;
-					return p.includes('/flac/');
+					const p = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
+					return p.includes('/flac/') || f.name.endsWith('.flac');
 				}) ?? null;
 
 			// Prefer MP3 for metadata, then FLAC
@@ -101,6 +209,7 @@
 				artist,
 				genre,
 				licenseUrl: sharedLicenseUrl,
+				streamUrl: sharedStreamUrl,
 				durationMs,
 				metadataSource,
 				files: group,
@@ -112,6 +221,23 @@
 		// Sort by basename
 		entries.sort((a, b) => a.basename.localeCompare(b.basename));
 		tracks = entries;
+
+		// Auto-hydrate license/stream from matching existing sources when shared fields are empty
+		if (!sharedLicenseUrl.trim() && !sharedStreamUrl.trim() && data.sources.length > 0) {
+			const sourceByBasename = new Map(data.sources.map((s) => [s.basename ?? '', s]));
+			const match = entries.find((e) => sourceByBasename.has(e.basename));
+			if (match) {
+				const src = sourceByBasename.get(match.basename);
+				if (src?.licenseUrl) sharedLicenseUrl = src.licenseUrl;
+				if (src?.streamUrl != null) sharedStreamUrl = src.streamUrl;
+			}
+		}
+
+		console.log('[handleFileSelect] result', { entriesCount: entries.length, basenames: entries.map((e) => e.basename) });
+		if (entries.length === 0) {
+			fileSelectError =
+				'No files matched the expected format. Use basename_codec_bitrate.ext (e.g. song_mp3_128.mp3, song_flac_0.flac). Or try the Directory option.';
+		}
 	};
 
 	const tracksJson = $derived(
@@ -122,10 +248,97 @@
 				artist: t.artist,
 				genre: t.genre,
 				licenseUrl: t.licenseUrl || sharedLicenseUrl,
+				streamUrl: t.streamUrl || sharedStreamUrl,
 				durationMs: t.durationMs
 			}))
 		)
 	);
+
+	const UPLOAD_TOAST_ID = 'source-upload';
+
+	const handleUploadSubmit = async (e: SubmitEvent) => {
+		e.preventDefault();
+		const formEl = e.target as HTMLFormElement;
+		if (!allComplete || isUploading) return;
+
+		isUploading = true;
+		const formData = new FormData(formEl);
+
+		uploadProgress.set(0);
+		toast.custom(UploadProgressToast, {
+			id: UPLOAD_TOAST_ID,
+			duration: Number.POSITIVE_INFINITY
+		});
+
+		const done = () => {
+			isUploading = false;
+			uploadProgress.set(null);
+		};
+
+		try {
+			const res = await new Promise<{ ok: boolean; status: number; text: () => Promise<string> }>(
+				(resolve, reject) => {
+					const xhr = new XMLHttpRequest();
+					const startMs = Date.now();
+					xhr.open('POST', formEl.action);
+					xhr.setRequestHeader('Accept', 'application/json');
+					xhr.upload.onprogress = (ev) => {
+						if (ev.lengthComputable && ev.total > 0) {
+							uploadProgress.set(Math.round((ev.loaded / ev.total) * 100));
+						} else {
+							// Indeterminate: animate 0→80 over 2s
+							const elapsed = Date.now() - startMs;
+							uploadProgress.set(Math.min(80, Math.round((elapsed / 2000) * 80)));
+						}
+					};
+					xhr.upload.onload = () => {
+						// Bytes sent complete; server is now processing
+						uploadProgress.set(100);
+					};
+					xhr.onload = () =>
+						resolve({
+							ok: xhr.status >= 200 && xhr.status < 300,
+							status: xhr.status,
+							text: async () => xhr.responseText
+						});
+					xhr.onerror = () => reject(new Error('Upload failed'));
+					xhr.send(formData);
+				}
+			);
+			done();
+			let result: { type?: string; data?: { count?: number; merged?: number; error?: string } };
+			try {
+				result = deserialize(await res.text()) as typeof result;
+			} catch {
+				result = {};
+			}
+			if (res.ok || res.status === 303 || res.status === 302) {
+				const count = result?.data?.count ?? 0;
+				const merged = result?.data?.merged ?? 0;
+				const parts = [];
+				if (count > 0) parts.push(`${count} added`);
+				if (merged > 0) parts.push(`${merged} merged`);
+				const summary = parts.length > 0 ? `${parts.join(', ')}. ` : '';
+				toast.success('Upload complete', {
+					id: UPLOAD_TOAST_ID,
+					description: `${summary}It may take a moment for sources and candidates to appear.`
+				});
+				showUploadDialog = false;
+				tracks = [];
+				sharedLicenseUrl = '';
+				fileSelectError = '';
+				if (directoryInputRef) directoryInputRef.value = '';
+				if (filesInputRef) filesInputRef.value = '';
+				invalidateAll();
+			} else {
+				const err = result?.data?.error ?? 'Upload failed';
+				toast.error(err, { id: UPLOAD_TOAST_ID });
+			}
+		} catch (err) {
+			done();
+			toast.error('Upload failed', { id: UPLOAD_TOAST_ID });
+		}
+	};
 </script>
 
 <svelte:head>
@@ -150,9 +363,17 @@
 		</div>
 	{/if}
 
-	{#if form?.success}
+	{#if form?.success && ((form?.count ?? 0) > 0 || (form?.merged ?? 0) > 0)}
+		{@const count = form?.count ?? 0}
+		{@const merged = form?.merged ?? 0}
 		<div class="rounded-lg border border-green-500 bg-green-50 p-3 text-sm text-green-800 dark:bg-green-900/20 dark:text-green-200">
-			{form?.count != null ? `Upload complete! ${form.count} source(s) added.` : 'Upload complete!'}
+			Upload complete!
+			{#if count > 0}
+				{count} source(s) added.
+			{/if}
+			{#if merged > 0}
+				{merged} source(s) merged (new codecs added).
+			{/if}
 		</div>
 	{/if}
 
@@ -161,38 +382,80 @@
 		<div class="bg-card rounded-xl border p-6">
 			<h2 class="mb-4 text-lg font-medium">Upload Pre-Transcoded Directory</h2>
 			<p class="text-muted-foreground mb-4 text-sm">
-				Select a directory output by <code>generate-permutations.sh</code>. It should contain
-				subdirectories like <code>flac/</code>, <code>opus/</code>, <code>mp3/</code>,
+				Select a directory or multi-select files from output by <code>generate-permutations.sh</code>.
+				Expects subdirectories like <code>flac/</code>, <code>opus/</code>, <code>mp3/</code>,
 				<code>aac/</code>.
 			</p>
-			<form method="POST" action="?/uploadDirectory" use:enhance enctype="multipart/form-data" class="space-y-4">
-				<div class="space-y-2">
-					<label for="upload-dir" class="text-sm font-medium">Directory</label>
-					<!-- @ts-ignore webkitdirectory is non-standard but supported -->
-					<input
-						id="upload-dir"
-						bind:this={fileInputRef}
-						name="files"
-						type="file"
-						multiple
-						webkitdirectory
-						onchange={handleDirectorySelect}
-						class="border-input bg-background flex w-full rounded-md border px-3 py-2 text-sm"
-					/>
+			<form
+				method="POST"
+				action="?/uploadDirectory"
+				enctype="multipart/form-data"
+				class="space-y-4"
+				onsubmit={handleUploadSubmit}
+			>
+				<div class="flex flex-wrap gap-4">
+					<div class="space-y-2">
+						<label for="upload-dir" class="text-sm font-medium">Directory</label>
+						<!-- @ts-expect-error webkitdirectory is non-standard but widely supported -->
+						<input
+							id="upload-dir"
+							bind:this={directoryInputRef}
+							name="files"
+							type="file"
+							multiple
+							webkitdirectory
+							accept=".flac,.opus,.ogg,.mp3,.m4a,.aac"
+							onchange={handleFileSelect}
+							class="border-input bg-background flex rounded-md border px-3 py-2 text-sm"
+						/>
+					</div>
+					<div class="space-y-2">
+						<label for="upload-files" class="text-sm font-medium">Files</label>
+						<input
+							id="upload-files"
+							bind:this={filesInputRef}
+							name="files"
+							type="file"
+							multiple
+							accept=".flac,.opus,.ogg,.mp3,.m4a,.aac"
+							onchange={handleFileSelect}
+							class="border-input bg-background flex rounded-md border px-3 py-2 text-sm"
+						/>
+					</div>
 				</div>
 
+				{#if fileSelectError}
+					<div class="rounded-lg border border-amber-500 bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+						{fileSelectError}
+					</div>
+				{/if}
+
 				{#if tracks.length > 0}
-					<div class="space-y-2">
-						<label for="license_url" class="text-sm font-medium">License URL (shared default)</label>
-						<input
-							id="license_url"
-							name="license_url"
-							type="url"
-							required
-							bind:value={sharedLicenseUrl}
-							class="border-input bg-background flex h-10 w-full rounded-md border px-3 py-2 text-sm"
-						/>
-						<p class="text-muted-foreground text-xs">Applied to all tracks. Override per-track below.</p>
+					<div class="grid gap-4 sm:grid-cols-2">
+						<div class="space-y-2">
+							<label for="license_url" class="text-sm font-medium">License URL (shared default)</label>
+							<input
+								id="license_url"
+								name="license_url"
+								type="url"
+								required
+								bind:value={sharedLicenseUrl}
+								class="border-input bg-background flex h-10 w-full rounded-md border px-3 py-2 text-sm"
+							/>
+							<p class="text-muted-foreground text-xs">Applied to all tracks. Override per-track below.</p>
+						</div>
+						<div class="space-y-2">
+							<label for="stream_url" class="text-sm font-medium">Stream URL (shared default)</label>
+							<input
+								id="stream_url"
+								name="stream_url"
+								type="url"
+								placeholder="https://…"
+								bind:value={sharedStreamUrl}
+								class="border-input bg-background flex h-10 w-full rounded-md border px-3 py-2 text-sm"
+							/>
+							<p class="text-muted-foreground text-xs">Optional. Shown after survey submission. Override per-track below.</p>
+						</div>
 					</div>
 
 					<div class="space-y-2">
@@ -278,6 +541,16 @@
 												class="border-input bg-background flex h-9 w-full rounded-md border px-2 py-1.5 text-sm"
 											/>
 										</div>
+										<div class="space-y-1">
+											<label for="stream-{i}" class="text-xs font-medium">Stream URL (override)</label>
+											<input
+												id="stream-{i}"
+												type="url"
+												bind:value={track.streamUrl}
+												placeholder={sharedStreamUrl || 'Optional—where to listen'}
+												class="border-input bg-background flex h-9 w-full rounded-md border px-2 py-1.5 text-sm"
+											/>
+										</div>
 									</div>
 									{#if track.metadataSource}
 										<p class="text-muted-foreground mt-1 text-xs">
@@ -305,10 +578,13 @@
 						<div class="flex gap-2">
 							<button
 								type="submit"
-								disabled={!allComplete}
-								class="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 rounded-lg px-4 py-2 text-sm font-medium disabled:cursor-not-allowed"
+								disabled={!allComplete || isUploading}
+								class="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium disabled:cursor-not-allowed"
 							>
-								Upload
+								{#if isUploading}
+									<Loader2 class="size-4 animate-spin" aria-hidden="true" />
+								{/if}
+								{isUploading ? 'Uploading…' : 'Upload'}
 							</button>
 							<button
 								type="button"
@@ -328,55 +604,393 @@
 	{#if data.sources.length === 0}
 		<p class="text-muted-foreground py-12 text-center text-sm">No source files yet.</p>
 	{:else}
-		<div class="overflow-x-auto">
-			<table class="w-full text-sm">
-				<thead>
-					<tr class="border-b">
-						<th class="px-4 py-2 text-left font-medium">Title</th>
-						<th class="px-4 py-2 text-left font-medium">Artist</th>
-						<th class="px-4 py-2 text-left font-medium">Genre</th>
-						<th class="px-4 py-2 text-left font-medium">Duration</th>
-						<th class="px-4 py-2 text-left font-medium">Status</th>
-						<th class="px-4 py-2 text-left font-medium">Actions</th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each data.sources as source}
+		<div class="space-y-4">
+			<div
+				class="bg-muted/50 flex items-center justify-between gap-4 rounded-lg border px-4 py-2"
+			>
+				<span class="text-muted-foreground text-sm">
+					{someSelected
+						? `${selectedIds.size} source${selectedIds.size === 1 ? '' : 's'} selected`
+						: 'Select sources to approve or delete'}
+				</span>
+				<div class="flex gap-2">
+					<form
+						method="POST"
+						action="?/approveBulk"
+						use:enhance={() => (opts) => handleApproveResult(opts)}
+						class="inline"
+					>
+						{#each [...selectedIds] as id}
+							<input type="hidden" name="ids" value={id} />
+						{/each}
+						<button
+							type="submit"
+							disabled={!someSelected}
+							class="text-primary hover:bg-primary/10 flex items-center gap-2 rounded px-2 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+						>
+							<CircleCheck class="size-4" aria-hidden="true" />
+							Approve
+						</button>
+					</form>
+					<form
+						method="POST"
+						action="?/removeBulk"
+						use:enhance={() => (opts) => handleRemoveResult(opts)}
+						class="inline"
+					>
+						{#each [...selectedIds] as id}
+							<input type="hidden" name="ids" value={id} />
+						{/each}
+						<button
+							type="submit"
+							disabled={!someSelected}
+							class="text-destructive hover:bg-destructive/10 flex items-center gap-2 rounded px-2 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+							onclick={(e) => {
+								if (
+									!someSelected ||
+									!confirm(
+										`Delete ${selectedIds.size} source${selectedIds.size === 1 ? '' : 's'}? This cannot be undone.`
+									)
+								) {
+									e.preventDefault();
+								}
+							}}
+						>
+							<Trash2 class="size-4" aria-hidden="true" />
+							Delete
+						</button>
+					</form>
+				</div>
+			</div>
+
+			<div class="overflow-x-auto">
+				<table class="w-full text-sm">
+					<thead>
 						<tr class="border-b">
-							<td class="px-4 py-2 font-medium">{source.title}</td>
-							<td class="text-muted-foreground px-4 py-2">{source.artist ?? '—'}</td>
-							<td class="text-muted-foreground px-4 py-2">{source.genre ?? '—'}</td>
-							<td class="text-muted-foreground px-4 py-2">
-								{Math.round(source.duration / 1000)}s
-							</td>
-							<td class="px-4 py-2">
-								{#if source.approvedAt}
-									<span class="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-800 dark:bg-green-900 dark:text-green-200">
-										Approved
-									</span>
-								{:else}
-									<span class="rounded-full bg-yellow-100 px-2 py-0.5 text-xs text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
-										Pending
-									</span>
-								{/if}
-							</td>
-							<td class="px-4 py-2">
-								{#if source.approvedAt}
-									<form method="POST" action="?/reject" use:enhance>
-										<input type="hidden" name="id" value={source.id} />
-										<button type="submit" class="text-xs text-destructive hover:underline">Revoke</button>
-									</form>
-								{:else}
-									<form method="POST" action="?/approve" use:enhance>
-										<input type="hidden" name="id" value={source.id} />
-										<button type="submit" class="text-primary text-xs hover:underline">Approve</button>
-									</form>
-								{/if}
-							</td>
+							<th class="w-8 px-2 py-2 pr-0"></th>
+							<th class="w-10 px-2 py-2 pr-0">
+								<Checkbox
+									checked={allSelected}
+									indeterminate={isIndeterminate}
+									onCheckedChange={handleSelectAllChange}
+									aria-label="Select all sources"
+								/>
+							</th>
+							<th class="px-4 py-2 text-left font-medium">Title</th>
+							<th class="px-4 py-2 text-left font-medium">Artist</th>
+							<th class="px-4 py-2 text-left font-medium">Genre</th>
+							<th class="px-4 py-2 text-left font-medium">Duration</th>
+							<th class="px-4 py-2 text-left font-medium">Candidates</th>
+							<th class="px-4 py-2 text-left font-medium">Status</th>
+							<th class="px-4 py-2 text-left font-medium">Actions</th>
 						</tr>
-					{/each}
-				</tbody>
-			</table>
+					</thead>
+					<tbody>
+						{#each data.sources as source}
+							{@const candidates = data.candidatesBySource?.[source.id] ?? []}
+							{@const isExpanded = expandedIds.has(source.id)}
+							<tr class="border-b">
+								<td class="w-8 px-2 py-2 pr-0">
+									<button
+										type="button"
+										class="text-muted-foreground hover:text-foreground flex size-6 items-center justify-center rounded transition-colors"
+										aria-expanded={isExpanded}
+										aria-label={isExpanded ? 'Collapse' : 'Expand'}
+										onclick={() => handleToggleExpanded(source.id)}
+									>
+										<span
+											class="size-4 transition-transform"
+											class:-rotate-90={!isExpanded}
+											aria-hidden="true"
+										>
+											<ChevronDown class="size-4" aria-hidden="true" />
+										</span>
+									</button>
+								</td>
+								<td class="w-10 px-2 py-2 pr-0">
+									<Checkbox
+										checked={selectedIds.has(source.id)}
+										onCheckedChange={(v) => handleSelectChange(source.id, v)}
+										aria-label="Select {source.title}"
+									/>
+								</td>
+								<td class="px-4 py-2 font-medium">{source.title}</td>
+								<td class="text-muted-foreground px-4 py-2">{source.artist ?? '—'}</td>
+								<td class="text-muted-foreground px-4 py-2">{source.genre ?? '—'}</td>
+								<td class="text-muted-foreground px-4 py-2">
+									{Math.round(source.duration / 1000)}s
+								</td>
+								<td class="text-muted-foreground px-4 py-2">
+									{candidates.length > 0
+										? candidates.map((c) => `${c.codec}@${c.bitrate}`).join(', ')
+										: '—'}
+								</td>
+								<td class="px-4 py-2">
+									{#if source.approvedAt}
+										<span
+											class="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-800 dark:bg-green-900 dark:text-green-200"
+										>
+											Approved
+										</span>
+									{:else}
+										<span
+											class="rounded-full bg-yellow-100 px-2 py-0.5 text-xs text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+										>
+											Pending
+										</span>
+									{/if}
+								</td>
+								<td class="px-4 py-2">
+									<div class="flex items-center gap-2">
+										{#if source.approvedAt}
+											<form method="POST" action="?/reject" use:enhance class="inline">
+												<input type="hidden" name="id" value={source.id} />
+												<button
+													type="submit"
+													class="text-xs text-destructive hover:underline"
+												>
+													Revoke
+												</button>
+											</form>
+										{:else}
+											<form method="POST" action="?/approve" use:enhance class="inline">
+												<input type="hidden" name="id" value={source.id} />
+												<button type="submit" class="text-primary text-xs hover:underline">
+													Approve
+												</button>
+											</form>
+										{/if}
+										<form
+											method="POST"
+											action="?/remove"
+											use:enhance={() => (opts) => handleRemoveResult(opts)}
+											class="inline"
+										>
+											<input type="hidden" name="id" value={source.id} />
+											<button
+												type="submit"
+												class="text-muted-foreground hover:text-destructive text-xs hover:underline"
+												onclick={(e) => {
+													if (
+														!confirm(
+															'Remove this source and all its files? This cannot be undone.'
+														)
+													) {
+														e.preventDefault();
+													}
+												}}
+											>
+												Remove
+											</button>
+										</form>
+									</div>
+								</td>
+							</tr>
+							{#if isExpanded}
+								<tr class="border-b bg-muted/20">
+									<td colspan="9" class="p-4">
+										<div class="space-y-6">
+											<!-- Candidates table: codec (x), bitrate (y) -->
+											<div>
+												<h3 class="mb-3 text-sm font-medium">Candidates ({candidates.length})</h3>
+												{#if candidates.length > 0}
+													{@const codecs = ['flac', 'opus', 'mp3', 'aac']}
+													{@const bitrates = [...new Set(candidates.map((c) => c.bitrate))].sort(
+														(a, b) => (a === 0 ? -1 : b === 0 ? 1 : a - b)
+													)}
+													{@const hasCandidate = (codec: string, bitrate: number) =>
+														candidates.some((c) => c.codec === codec && c.bitrate === bitrate)}
+													<div class="border-input overflow-x-auto rounded-md border">
+														<table class="w-full min-w-[200px] text-xs">
+															<thead>
+																<tr class="border-b bg-muted/50">
+																	<th class="px-2 py-1.5 text-left font-medium">bitrate ↓</th>
+																	{#each codecs as codec}
+																		<th class="px-2 py-1.5 text-center font-medium">{codec}</th>
+																	{/each}
+																</tr>
+															</thead>
+															<tbody>
+																{#each bitrates as bitrate}
+																	<tr class="border-b last:border-b-0">
+																		<td class="text-muted-foreground px-2 py-1 font-mono">{bitrate}</td>
+																		{#each codecs as codec}
+																			<td class="px-2 py-1 text-center">
+																				{#if hasCandidate(codec, bitrate)}
+																					<span class="text-primary" aria-hidden="true">✓</span>
+																				{:else}
+																					<span class="text-muted-foreground/40" aria-hidden="true">—</span>
+																				{/if}
+																			</td>
+																		{/each}
+																	</tr>
+																{/each}
+															</tbody>
+														</table>
+													</div>
+												{:else}
+													<p class="text-muted-foreground text-sm">No candidates yet. Upload transcodes below.</p>
+												{/if}
+											</div>
+
+											<!-- Metadata form -->
+											<div>
+												<h3 class="mb-3 text-sm font-medium">Edit Metadata</h3>
+												<form
+													method="POST"
+													action="?/updateMetadata"
+													use:enhance={() => {
+														return ({ result, update }) => {
+															if (result.type === 'failure' && result.data?.error) {
+																toast.error(result.data.error as string);
+															} else if (result.type === 'success') {
+																toast.success('Metadata saved');
+															}
+															update();
+														};
+													}}
+													class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
+												>
+													<input type="hidden" name="id" value={source.id} />
+													<div class="space-y-1">
+														<label for="meta-title-{source.id}" class="text-xs font-medium">Title</label>
+														<input
+															id="meta-title-{source.id}"
+															name="title"
+															type="text"
+															value={source.title}
+															required
+															class="border-input bg-background flex h-9 w-full rounded-md border px-2 py-1.5 text-sm"
+														/>
+													</div>
+													<div class="space-y-1">
+														<label for="meta-artist-{source.id}" class="text-xs font-medium">Artist</label>
+														<input
+															id="meta-artist-{source.id}"
+															name="artist"
+															type="text"
+															value={source.artist ?? ''}
+															class="border-input bg-background flex h-9 w-full rounded-md border px-2 py-1.5 text-sm"
+														/>
+													</div>
+													<div class="space-y-1">
+														<label for="meta-genre-{source.id}" class="text-xs font-medium">Genre</label>
+														<input
+															id="meta-genre-{source.id}"
+															name="genre"
+															type="text"
+															value={source.genre ?? ''}
+															class="border-input bg-background flex h-9 w-full rounded-md border px-2 py-1.5 text-sm"
+														/>
+													</div>
+													<div class="space-y-1">
+														<label for="meta-license-{source.id}" class="text-xs font-medium">License URL</label>
+														<input
+															id="meta-license-{source.id}"
+															name="license_url"
+															type="url"
+															value={source.licenseUrl}
+															required
+															class="border-input bg-background flex h-9 w-full rounded-md border px-2 py-1.5 text-sm"
+														/>
+													</div>
+													<div class="space-y-1">
+														<label for="meta-stream-{source.id}" class="text-xs font-medium">Stream URL</label>
+														<input
+															id="meta-stream-{source.id}"
+															name="stream_url"
+															type="url"
+															value={source.streamUrl ?? ''}
+															placeholder="https://…"
+															class="border-input bg-background flex h-9 w-full rounded-md border px-2 py-1.5 text-sm"
+														/>
+													</div>
+													<div class="space-y-1">
+														<label for="meta-duration-{source.id}" class="text-xs font-medium">Duration (ms)</label>
+														<input
+															id="meta-duration-{source.id}"
+															name="duration"
+															type="number"
+															value={source.duration}
+															min="0"
+															class="border-input bg-background flex h-9 w-full rounded-md border px-2 py-1.5 text-sm"
+														/>
+													</div>
+													<div class="flex items-end sm:col-span-2 lg:col-span-3">
+														<button
+															type="submit"
+															class="bg-primary text-primary-foreground hover:bg-primary/90 rounded-md px-3 py-1.5 text-sm font-medium"
+														>
+															Save Metadata
+														</button>
+													</div>
+												</form>
+											</div>
+
+											<!-- Upload candidates -->
+											<div>
+												<h3 class="mb-3 text-sm font-medium">Upload New Candidates</h3>
+												<p class="text-muted-foreground mb-2 text-xs">
+													Select transcoded files matching this source. Same duration (±500ms) and
+													metadata are required. Filename format: <code
+														class="rounded bg-muted px-1">basename_codec_bitrate.ext</code>
+												</p>
+												<form
+													method="POST"
+													action="?/uploadCandidates"
+													enctype="multipart/form-data"
+													use:enhance={() => {
+														uploadingSourceId = source.id;
+														return ({ result, update }) => {
+															uploadingSourceId = null;
+															if (result.type === 'failure' && result.data?.error) {
+																toast.error(result.data.error as string);
+															} else if (result.type === 'success' && result.data) {
+																const d = result.data as { added?: number; errors?: string[] };
+																if ((d.added ?? 0) > 0) toast.success(`Added ${d.added} candidate(s)`);
+																if (d.errors?.length) d.errors.forEach((e) => toast.warning(e));
+															}
+															update();
+														};
+													}}
+													class="flex flex-wrap items-end gap-3"
+												>
+													<input type="hidden" name="source_id" value={source.id} />
+													<div class="flex min-w-0 flex-1 flex-col gap-1">
+														<label for="candidates-{source.id}" class="text-xs font-medium"
+															>Files (multiple)</label
+														>
+														<input
+															id="candidates-{source.id}"
+															name="files"
+															type="file"
+															multiple
+															accept=".flac,.opus,.ogg,.mp3,.m4a,.aac"
+															class="border-input bg-background flex w-full max-w-xs rounded-md border px-2 py-1.5 text-sm file:mr-2 file:rounded file:border-0 file:bg-primary file:px-3 file:py-1 file:text-sm file:text-primary-foreground"
+														/>
+													</div>
+													<button
+														type="submit"
+														disabled={uploadingSourceId === source.id}
+														class="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed"
+													>
+														{#if uploadingSourceId === source.id}
+															<Loader2 class="size-4 animate-spin" aria-hidden="true" />
+														{:else}
+															<Upload class="size-4" aria-hidden="true" />
+														{/if}
+														Upload
+													</button>
+												</form>
+											</div>
+										</div>
+									</td>
+								</tr>
+							{/if}
+						{/each}
+					</tbody>
+				</table>
+			</div>
 		</div>
 	{/if}
 </div>

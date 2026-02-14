@@ -21,7 +21,12 @@ export type SelectedOption = (typeof SELECTED_OPTIONS)[number];
 export const PAIRING_TYPES = ['same_song', 'different_song', 'placebo'] as const;
 export type PairingType = (typeof PAIRING_TYPES)[number];
 
-export const TRANSITION_MODES = ['gapless', 'gap_continue', 'gap_restart'] as const;
+export const TRANSITION_MODES = [
+	'gapless',
+	'gap_continue',
+	'gap_restart',
+	'gap_pause_resume'
+] as const;
 export type TransitionMode = (typeof TRANSITION_MODES)[number];
 
 // ── Tables ────────────────────────────────────────────────────────────────────
@@ -49,6 +54,8 @@ export const sourceFiles = sqliteTable('source_files', {
 	id: text('id')
 		.primaryKey()
 		.$defaultFn(() => crypto.randomUUID()),
+	/** Basename from filename (e.g. "song_name" from "song_name_flac_0.flac"). Used for merge-on-upload. */
+	basename: text('basename'),
 	r2Key: text('r2_key').notNull(),
 	uploadedAt: integer('uploaded_at', { mode: 'timestamp' })
 		.notNull()
@@ -118,6 +125,11 @@ export const answers = sqliteTable('answers', {
 	startTime: integer('start_time').notNull(), // segment start in ms
 	segmentDuration: integer('segment_duration').notNull(), // segment length in ms
 	responseTime: integer('response_time') // time spent deciding in ms
+});
+
+export const surveyConfig = sqliteTable('survey_config', {
+	key: text('key').primaryKey(),
+	value: text('value').notNull()
 });
 
 export const resultSnapshots = sqliteTable('result_snapshots', {

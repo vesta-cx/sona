@@ -36,3 +36,8 @@ storybook-static
 !.dev.vars.example
 
 sample-audio/*.turbo/
+sample-audio/
+.turbo/
+
+sample-audio/
+.turbo/

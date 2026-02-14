@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { locales, localizeHref } from '$lib/paraglide/runtime';
+	import { Toaster } from '@vesta-cx/ui/components/ui/sonner';
 	import './layout.css';
 	import '@vesta-cx/ui/styles/index.scss';
 	import favicon from '$lib/assets/favicon.svg';
@@ -11,6 +12,7 @@
 <svelte:head><link rel="icon" href={favicon} /></svelte:head>
 
 {@render children()}
+<Toaster position="bottom-right" />
 <div style="display:none">
 	{#each locales as locale}
 		<a href={localizeHref(page.url.pathname, { locale })}>

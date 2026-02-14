@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 
+	/** Pause animation when element's intersection ratio drops below this (0–1). Saves CPU when hero is off-screen. */
+	const VISIBILITY_THRESHOLD = 0.05;
+
 	// --- Public types ---
 	type Range = [min: number, max: number];
 
@@ -65,6 +68,7 @@
 
 	// --- State ---
 	let canvas: HTMLCanvasElement;
+	let container: HTMLDivElement;
 
 	onMount(() => {
 		const ctx = canvas.getContext('2d');
@@ -87,6 +91,8 @@
 		const resizeObserver = new ResizeObserver(handleResize);
 		resizeObserver.observe(canvas);
 		handleResize();
+
+		let isVisible = true;
 
 		// --- Helpers ---
 		const rand = ([min, max]: Range): number => min + Math.random() * (max - min);
@@ -134,7 +140,7 @@
 
 		// --- Draw helpers ---
 		const drawGrid = (w: number, h: number) => {
-			const spacing = 48;
+			const spacing = 64;
 			ctx.fillStyle = primaryColor;
 			ctx.globalAlpha = 0.035;
 			for (let x = spacing; x < w; x += spacing) {
@@ -178,7 +184,7 @@
 			ctx.globalAlpha = wave.opacity * 0.4;
 			ctx.lineWidth = 4;
 			ctx.beginPath();
-			for (let x = 0; x <= w; x += 3) {
+			for (let x = 0; x <= w; x += 6) {
 				const y = centerY + waveY(x);
 				if (x === 0) ctx.moveTo(x, y);
 				else ctx.lineTo(x, y);
@@ -189,7 +195,7 @@
 			ctx.globalAlpha = wave.opacity;
 			ctx.lineWidth = 1.5;
 			ctx.beginPath();
-			for (let x = 0; x <= w; x += 2) {
+			for (let x = 0; x <= w; x += 4) {
 				const y = centerY + waveY(x);
 				if (x === 0) ctx.moveTo(x, y);
 				else ctx.lineTo(x, y);
@@ -241,6 +247,7 @@
 		let animationId: number;
 
 		const animate = () => {
+			if (!isVisible) return;
 			const w = canvas.width / dpr;
 			const h = canvas.height / dpr;
 
@@ -260,14 +267,29 @@
 			animationId = requestAnimationFrame(animate);
 		};
 
+		const visibilityObserver = new IntersectionObserver(
+			(entries) => {
+				const e = entries[0];
+				if (!e) return;
+				const visible =
+					e.isIntersecting && e.intersectionRatio >= VISIBILITY_THRESHOLD;
+				isVisible = visible;
+				if (visible) animate();
+			},
+			{ threshold: [0, VISIBILITY_THRESHOLD, 0.1, 0.5, 1] }
+		);
+		if (container) visibilityObserver.observe(container);
+
 		animate();
 
 		return () => {
 			cancelAnimationFrame(animationId);
 			resizeObserver.disconnect();
+			visibilityObserver.disconnect();
 		};
 	});
 </script>
 
-<canvas bind:this={canvas} class="absolute inset-0 size-full {className}" aria-hidden="true"
-></canvas>
+<div bind:this={container} class="absolute inset-0 size-full">
+	<canvas bind:this={canvas} class="size-full {className}" aria-hidden="true"></canvas>
+</div>

@@ -1,19 +1,42 @@
 import { json, error } from '@sveltejs/kit';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { getDb } from '$lib/server/db';
 import {
 	answers,
+	candidateFiles,
 	ephemeralStreamUrls,
 	SELECTED_OPTIONS,
 	TRANSITION_MODES
 } from '$lib/server/db/schema';
+import { DEFAULT_SEGMENT_DURATION_MS } from '$lib/server/survey-config';
 import type { RequestHandler } from './$types';
 
+const LOG = '[game:answers]';
+/** Short expiry for "you were listening to" playback token */
+const PLAYBACK_TOKEN_EXPIRY_MIN = 2;
+
 export const POST: RequestHandler = async ({ request, platform }) => {
-	if (!platform) return error(500, 'Platform not available');
+	console.log(`${LOG} POST /api/answers`);
+
+	if (!platform) {
+		console.error(`${LOG} Platform not available`);
+		return error(500, 'Platform not available');
+	}
 
 	const body = await request.json();
-	const { tokenA, tokenB, selected, transitionMode, startTime, segmentDuration, responseTime, deviceId } = body;
+	const {
+		tokenA,
+		tokenB,
+		tokenYwltA,
+		tokenYwltB,
+		selected,
+		transitionMode,
+		startTime,
+		segmentDuration,
+		responseTime,
+		deviceId,
+		playbackPositionMs
+	} = body;
 
 	// Validate required fields
 	if (!tokenA || !tokenB || !selected || !transitionMode || !deviceId) {
@@ -30,6 +53,13 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 
 	const db = getDb(platform);
 
+	console.log(`${LOG} Resolving tokens`, {
+		tokenA: body.tokenA?.slice(0, 8) + '...',
+		tokenB: body.tokenB?.slice(0, 8) + '...',
+		selected: body.selected,
+		deviceId: body.deviceId?.slice(0, 8) + '...'
+	});
+
 	// Resolve tokens to candidate IDs
 	const streamA = await db
 		.select()
@@ -44,8 +74,18 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 		.get();
 
 	if (!streamA || !streamB) {
+		console.warn(`${LOG} Tokens expired or invalid`, {
+			tokenAFound: !!streamA,
+			tokenBFound: !!streamB
+		});
 		return error(410, 'Stream tokens expired or invalid');
 	}
+
+	console.log(`${LOG} Resolved → candidates`, {
+		candidateAId: streamA.candidateFileId,
+		candidateBId: streamB.candidateFileId,
+		pairingType: streamA.candidateFileId === streamB.candidateFileId ? 'placebo' : 'same/different'
+	});
 
 	// Determine pairing type from candidate IDs
 	const candidateAId = streamA.candidateFileId;
@@ -70,14 +110,65 @@ export const POST: RequestHandler = async ({ request, platform }) => {
 			pairingType,
 			transitionMode,
 			startTime: startTime ?? 0,
-			segmentDuration: segmentDuration ?? 12000,
+			segmentDuration: segmentDuration ?? DEFAULT_SEGMENT_DURATION_MS,
 			responseTime: responseTime ?? null
 		})
 		.returning();
 
-	// Clean up used tokens
+	// Clean up used tokens (comparison + YWLT opus_256)
 	await db.delete(ephemeralStreamUrls).where(eq(ephemeralStreamUrls.token, tokenA));
 	await db.delete(ephemeralStreamUrls).where(eq(ephemeralStreamUrls.token, tokenB));
+	if (tokenYwltA) {
+		await db.delete(ephemeralStreamUrls).where(eq(ephemeralStreamUrls.token, tokenYwltA));
+	}
+	if (tokenYwltB) {
+		await db.delete(ephemeralStreamUrls).where(eq(ephemeralStreamUrls.token, tokenYwltB));
+	}
 
-	return json({ id: answer?.id, success: true });
+	// Create playback token for opus_256 of selected source (for "you were listening to")
+	let playbackToken: string | null = null;
+	const positionMs =
+		typeof playbackPositionMs === 'number' && playbackPositionMs >= 0 ? playbackPositionMs : null;
+
+	const selectedCandidateId = selected === 'a' ? candidateAId : candidateBId;
+	const selectedCandidate = await db
+		.select({ sourceFileId: candidateFiles.sourceFileId })
+		.from(candidateFiles)
+		.where(eq(candidateFiles.id, selectedCandidateId))
+		.get();
+
+	if (selectedCandidate) {
+		const opus256 = await db
+			.select({ id: candidateFiles.id })
+			.from(candidateFiles)
+			.where(
+				and(
+					eq(candidateFiles.sourceFileId, selectedCandidate.sourceFileId),
+					eq(candidateFiles.codec, 'opus'),
+					eq(candidateFiles.bitrate, 256)
+				)
+			)
+			.get();
+
+		if (opus256) {
+			const expiresAt = new Date(Date.now() + PLAYBACK_TOKEN_EXPIRY_MIN * 60 * 1000);
+			const [row] = await db
+				.insert(ephemeralStreamUrls)
+				.values({ candidateFileId: opus256.id, expiresAt })
+				.returning();
+			playbackToken = row?.token ?? null;
+		}
+	}
+
+	console.log(`${LOG} Answer saved, tokens deleted`, {
+		answerId: answer?.id,
+		playbackToken: playbackToken ? 'created' : 'none'
+	});
+
+	return json({
+		id: answer?.id,
+		success: true,
+		playbackToken,
+		playbackPositionMs: positionMs ?? 0
+	});
 };

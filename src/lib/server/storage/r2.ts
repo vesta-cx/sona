@@ -1,7 +1,24 @@
-import type { StorageObject, StorageProvider } from './types';
+import type { ListResult, ListedObject, StorageObject, StorageProvider } from './types';
 
 export class R2StorageProvider implements StorageProvider {
 	constructor(private bucket: R2Bucket) {}
+
+	async list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<ListResult> {
+		const result = await this.bucket.list({
+			prefix: options?.prefix,
+			limit: options?.limit ?? 1000,
+			cursor: options?.cursor
+		});
+		return {
+			objects: (result.objects ?? []).map((o) => ({
+				key: o.key,
+				size: o.size,
+				uploaded: o.uploaded ? new Date(o.uploaded) : new Date(0)
+			})),
+			truncated: result.truncated ?? false,
+			cursor: result.cursor
+		};
+	}
 
 	async put(
 		key: string,

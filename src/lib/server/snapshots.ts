@@ -108,6 +108,8 @@ export const generateSnapshot = async (db: Database): Promise<void> => {
 		return c;
 	};
 
+	let neitherCount = 0;
+
 	for (const answer of allAnswers) {
 		const candA = await loadCandidate(answer.candidateAId);
 		const candB = await loadCandidate(answer.candidateBId);
@@ -122,12 +124,15 @@ export const generateSnapshot = async (db: Database): Promise<void> => {
 		} else if (answer.selected === 'b') {
 			comparisons.push({ winner: keyB, loser: keyA });
 			codecWins[candB.codec] = (codecWins[candB.codec] ?? 0) + 1;
+		} else {
+			neitherCount += 1;
 		}
-		// "neither" doesn't contribute to win rates
 
 		codecTotal[candA.codec] = (codecTotal[candA.codec] ?? 0) + 1;
 		codecTotal[candB.codec] = (codecTotal[candB.codec] ?? 0) + 1;
 	}
+
+	const neitherRate = allAnswers.length > 0 ? neitherCount / allAnswers.length : 0;
 
 	// Codec win rates
 	const codecWinRates: Record<string, number> = {};
@@ -190,11 +195,82 @@ export const generateSnapshot = async (db: Database): Promise<void> => {
 		}
 	}
 
+	// FLAC vs lossy: for each lossy (codec, bitrate), win rate of FLAC when compared
+	const flacVsLossyWins: Record<string, Record<string, number>> = {};
+	const flacVsLossyTotal: Record<string, Record<string, number>> = {};
+
+	for (const answer of allAnswers) {
+		const candA = await loadCandidate(answer.candidateAId);
+		const candB = await loadCandidate(answer.candidateBId);
+		if (!candA || !candB) continue;
+
+		const isAFlac = candA.codec === 'flac';
+		const isBFlac = candB.codec === 'flac';
+		if (!isAFlac && !isBFlac) continue; // both lossy
+		if (isAFlac && isBFlac) continue; // both flac
+
+		const lossy = isAFlac ? candB : candA;
+		if (lossy.codec === 'flac') continue;
+
+		const brKey = String(lossy.bitrate);
+		flacVsLossyTotal[lossy.codec] = flacVsLossyTotal[lossy.codec] ?? {};
+		flacVsLossyTotal[lossy.codec][brKey] =
+			(flacVsLossyTotal[lossy.codec][brKey] ?? 0) + 1;
+
+		if (answer.selected === 'a' && isAFlac) {
+			flacVsLossyWins[lossy.codec] = flacVsLossyWins[lossy.codec] ?? {};
+			flacVsLossyWins[lossy.codec][brKey] =
+				(flacVsLossyWins[lossy.codec][brKey] ?? 0) + 1;
+		} else if (answer.selected === 'b' && isBFlac) {
+			flacVsLossyWins[lossy.codec] = flacVsLossyWins[lossy.codec] ?? {};
+			flacVsLossyWins[lossy.codec][brKey] =
+				(flacVsLossyWins[lossy.codec][brKey] ?? 0) + 1;
+		}
+	}
+
+	const flacVsLossy: Record<string, Record<string, number>> = {};
+	for (const [codec, bitrateMap] of Object.entries(flacVsLossyTotal)) {
+		flacVsLossy[codec] = {};
+		for (const [br, total] of Object.entries(bitrateMap)) {
+			const wins = flacVsLossyWins[codec]?.[br] ?? 0;
+			flacVsLossy[codec][br] = total > 0 ? wins / total : 0;
+		}
+	}
+
+	// Neither rate by bitrate difference
+	const neitherByDiff: Record<string, { neither: number; total: number }> = {};
+	const getDiffBucket = (diff: number): string => {
+		if (diff <= 32) return '0-32';
+		if (diff <= 64) return '32-64';
+		if (diff <= 128) return '64-128';
+		return '128+';
+	};
+
+	for (const answer of allAnswers) {
+		const candA = await loadCandidate(answer.candidateAId);
+		const candB = await loadCandidate(answer.candidateBId);
+		if (!candA || !candB) continue;
+
+		const diff = Math.abs(candA.bitrate - candB.bitrate);
+		const bucket = getDiffBucket(diff);
+		neitherByDiff[bucket] = neitherByDiff[bucket] ?? { neither: 0, total: 0 };
+		neitherByDiff[bucket].total += 1;
+		if (answer.selected === 'neither') neitherByDiff[bucket].neither += 1;
+	}
+
+	const neitherByBitrateDiff: Record<string, number> = {};
+	for (const [bucket, { neither, total }] of Object.entries(neitherByDiff)) {
+		neitherByBitrateDiff[bucket] = total > 0 ? neither / total : 0;
+	}
+
 	const insights = {
 		codecWinRates,
 		bradleyTerryScores,
 		deviceBreakdown,
-		heatmap
+		heatmap,
+		neitherRate,
+		flacVsLossy,
+		neitherByBitrateDiff
 	};
 
 	// Insert snapshot

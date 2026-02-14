@@ -41,5 +41,12 @@
 			<h3 class="font-medium">Snapshots</h3>
 			<p class="text-muted-foreground mt-1 text-sm">View results and trigger snapshots</p>
 		</a>
+		<a
+			href="/admin/storage"
+			class="bg-card hover:bg-muted/50 rounded-xl border p-6 transition-colors"
+		>
+			<h3 class="font-medium">R2 Storage</h3>
+			<p class="text-muted-foreground mt-1 text-sm">Inspect object keys in the audio bucket</p>
+		</a>
 	</div>
 </div>

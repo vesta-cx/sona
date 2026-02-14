@@ -1,57 +1,114 @@
 import { error } from '@sveltejs/kit';
-import { eq, lt } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { getDb } from '$lib/server/db';
-import { getStorage } from '$lib/server/storage';
 import { ephemeralStreamUrls, candidateFiles } from '$lib/server/db/schema';
 import type { RequestHandler } from './$types';
 
-export const GET: RequestHandler = async ({ params, platform }) => {
-	if (!platform) return error(500, 'Platform not available');
+/** Bytes per second from bitrate (kbps). FLAC uses ~900 kbps when bitrate is 0. */
+const bytesPerSecondFromBitrate = (bitrate: number): number => {
+	if (bitrate <= 0) return (900 * 1000) / 8; // ~112.5 KB/s for FLAC
+	return (bitrate * 1000) / 8;
+};
+
+const LOG = '[game:stream]';
+
+export const GET: RequestHandler = async ({ params, url, platform }) => {
+	console.log(`${LOG} GET /api/stream/[token] request`, {
+		token: params.token,
+		query: Object.fromEntries(url.searchParams)
+	});
+
+	if (!platform) {
+		console.error(`${LOG} Platform not available`);
+		return error(500, 'Platform not available');
+	}
 
 	const { token } = params;
 	const db = getDb(platform);
 
-	// Look up the stream token
+	const startMs = url.searchParams.get('start');
+	const durationMs = url.searchParams.get('duration');
+
 	const streamUrl = await db
 		.select()
 		.from(ephemeralStreamUrls)
 		.where(eq(ephemeralStreamUrls.token, token))
 		.get();
 
-	if (!streamUrl) return error(404, 'Stream not found');
+	if (!streamUrl) {
+		console.warn(`${LOG} Token not found: ${token}`);
+		return error(404, 'Stream not found');
+	}
 
-	// Check expiry
 	if (streamUrl.expiresAt < new Date()) {
-		// Delete expired token
+		console.warn(`${LOG} Token expired: ${token}`);
 		await db.delete(ephemeralStreamUrls).where(eq(ephemeralStreamUrls.token, token));
 		return error(410, 'Stream expired');
 	}
 
-	// Get the candidate file info
 	const candidate = await db
 		.select()
 		.from(candidateFiles)
 		.where(eq(candidateFiles.id, streamUrl.candidateFileId))
 		.get();
 
-	if (!candidate) return error(404, 'Audio file not found');
+	if (!candidate) {
+		console.warn(`${LOG} Candidate not found for token: ${token}`);
+		return error(404, 'Audio file not found');
+	}
 
-	// Fetch from storage
-	const storage = getStorage(platform);
-	const object = await storage.get(candidate.r2Key);
-
-	if (!object) return error(404, 'Audio file not in storage');
-
-	// Determine content type without revealing codec
-	// Use generic audio content type
-	const contentType = object.contentType || 'audio/mpeg';
-
-	return new Response(object.body, {
-		headers: {
-			'Content-Type': contentType,
-			'Content-Length': String(object.size),
-			'Cache-Control': 'no-store',
-			'Accept-Ranges': 'bytes'
-		}
+	console.log(`${LOG} Resolved token → candidate`, {
+		token: token.slice(0, 8) + '...',
+		candidateId: candidate.id,
+		codec: candidate.codec,
+		bitrate: candidate.bitrate,
+		r2Key: candidate.r2Key
 	});
+
+	const bucket = platform.env.AUDIO_BUCKET;
+	const bytesPerSec = bytesPerSecondFromBitrate(candidate.bitrate);
+
+	let range: { offset: number; length: number } | undefined;
+	if (startMs != null && durationMs != null) {
+		const start = Math.max(0, parseInt(startMs, 10) || 0);
+		const duration = Math.max(0, parseInt(durationMs, 10) || 0);
+		if (duration > 0) {
+			const offset = Math.floor((start / 1000) * bytesPerSec);
+			const length = Math.ceil((duration / 1000) * bytesPerSec);
+			range = { offset, length };
+		}
+	}
+
+	const object = range
+		? await bucket.get(candidate.r2Key, { range })
+		: await bucket.get(candidate.r2Key);
+
+	if (!object || !object.body) {
+		console.error(`${LOG} R2 object not found: ${candidate.r2Key}`);
+		return error(404, 'Audio file not in storage');
+	}
+
+	console.log(`${LOG} Serving ${range ? 'partial' : 'full'} audio`, {
+		token: token.slice(0, 8) + '...',
+		size: object.size,
+		range: range ?? 'none'
+	});
+
+	const contentType = object.httpMetadata?.contentType ?? 'audio/mpeg';
+	const size = object.size;
+
+	const headers: Record<string, string> = {
+		'Content-Type': contentType,
+		'Cache-Control': 'no-store',
+		'Accept-Ranges': 'bytes'
+	};
+
+	if (range && object.range) {
+		headers['Content-Range'] = `bytes ${object.range.offset}-${object.range.offset + size - 1}/*`;
+		headers['Content-Length'] = String(size);
+		return new Response(object.body, { status: 206, headers });
+	}
+
+	headers['Content-Length'] = String(size);
+	return new Response(object.body, { headers });
 };

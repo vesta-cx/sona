@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { desc, gt } from 'drizzle-orm';
+import { desc } from 'drizzle-orm';
 import { getDb } from '$lib/server/db';
 import { resultSnapshots } from '$lib/server/db/schema';
 import type { RequestHandler } from './$types';
@@ -15,7 +15,6 @@ export const GET: RequestHandler = async ({ platform }) => {
 		const snapshot = await db
 			.select()
 			.from(resultSnapshots)
-			.where(gt(resultSnapshots.expiresAt, new Date()))
 			.orderBy(desc(resultSnapshots.createdAt))
 			.limit(1)
 			.get();

@@ -4,7 +4,13 @@
 		SectionBackground,
 		SectionContent
 	} from '@vesta-cx/ui/components/layout/section';
+	import * as StatCard from '@vesta-cx/ui/components/ui/stat-card';
+	import * as Empty from '@vesta-cx/ui/components/ui/empty';
 	import HeroCanvas from '$lib/components/hero-canvas.svelte';
+	import PqLineChart from '$lib/components/pq-line-chart.svelte';
+	import FlacVsLossyChart from '$lib/components/flac-vs-lossy-chart.svelte';
+	import NeitherByDiffChart from '$lib/components/neither-by-diff-chart.svelte';
+	import CodecDescriptions from '$lib/components/codec-descriptions.svelte';
 
 	let { data } = $props();
 
@@ -23,6 +29,13 @@
 	);
 	const heatmapData = $derived(
 		(insights?.heatmap as Array<{ row: string; col: string; value: number }> | undefined) ?? []
+	);
+	const neitherRate = $derived((insights?.neitherRate as number | undefined) ?? 0);
+	const flacVsLossy = $derived(
+		(insights?.flacVsLossy as Record<string, Record<string, number>> | undefined) ?? {}
+	);
+	const neitherByBitrateDiff = $derived(
+		(insights?.neitherByBitrateDiff as Record<string, number> | undefined) ?? {}
 	);
 
 	const codecs = ['FLAC', 'Opus', 'MP3', 'AAC'];
@@ -91,19 +104,19 @@
 			</div>
 
 			<div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-				<!-- Total Responses -->
-				<div class="bg-card rounded-xl border p-6">
-					<h3 class="text-muted-foreground text-sm font-medium">Total Responses</h3>
-					<p class="mt-2 text-4xl font-bold tracking-tight">
-						{snapshot.totalResponses.toLocaleString()}
-					</p>
-				</div>
+				<StatCard.StatCard label="Total Responses" value={snapshot.totalResponses} />
 
-				<!-- Codec Win Rates -->
+				{#if neitherRate > 0}
+					<StatCard.StatCard
+						label={'"Can\'t tell" rate'}
+						value={`${(neitherRate * 100).toFixed(1)}%`}
+						helper="Responses where listeners couldn't pick a winner"
+					/>
+				{/if}
+
 				{#if Object.keys(codecWinRates).length > 0}
-					<div class="bg-card rounded-xl border p-6 md:col-span-2">
-						<h3 class="text-muted-foreground text-sm font-medium">Codec Preference</h3>
-						<div class="mt-4 space-y-3">
+					<StatCard.StatCard label="Codec Preference" colSpan="md:col-span-2">
+						<div class="space-y-3">
 							{#each Object.entries(codecWinRates).sort(([, a], [, b]) => b - a) as [codec, rate]}
 								<div class="flex items-center gap-3">
 									<span class="w-12 text-sm font-medium">{codec.toUpperCase()}</span>
@@ -119,15 +132,15 @@
 								</div>
 							{/each}
 						</div>
-					</div>
+					</StatCard.StatCard>
 				{/if}
 
-				<!-- Bradley-Terry Rankings -->
 				{#if Object.keys(btScores).length > 0}
-					<div class="bg-card rounded-xl border p-6">
-						<h3 class="text-muted-foreground text-sm font-medium">Quality Rankings</h3>
-						<p class="text-muted-foreground mt-1 text-xs">Bradley-Terry model scores</p>
-						<div class="mt-4 space-y-2">
+					<StatCard.StatCard
+						label="Quality Rankings"
+						helper="Bradley-Terry model scores"
+					>
+						<div class="space-y-2">
 							{#each Object.entries(btScores).sort(([, a], [, b]) => b - a) as [key, score], i}
 								<div class="flex items-center justify-between text-sm">
 									<div class="flex items-center gap-2">
@@ -138,34 +151,29 @@
 								</div>
 							{/each}
 						</div>
-					</div>
+					</StatCard.StatCard>
 				{/if}
 
-				<!-- Heatmap -->
 				{#if heatmapData.length > 0}
 					{#await import('@vesta-cx/ui/components/ui/heatmap') then { Heatmap }}
-						<div class="bg-card rounded-xl border p-6 md:col-span-2 lg:col-span-3">
-							<h3 class="text-muted-foreground text-sm font-medium">
-								Codec × Bitrate Win Rates
-							</h3>
-							<div class="mt-4">
-								<Heatmap
-									data={heatmapData}
-									rows={[...new Set(heatmapData.map((d) => d.row))]}
-									cols={[...new Set(heatmapData.map((d) => d.col))]}
-									rowLabel="Codec"
-									colLabel="Bitrate (kbps)"
-								/>
-							</div>
-						</div>
+						<StatCard.StatCard
+							label="Codec × Bitrate Win Rates"
+							colSpan="md:col-span-2 lg:col-span-3"
+						>
+							<Heatmap
+								data={heatmapData}
+								rows={[...new Set(heatmapData.map((d) => d.row))]}
+								cols={[...new Set(heatmapData.map((d) => d.col))]}
+								rowLabel="Codec"
+								colLabel="Bitrate (kbps)"
+							/>
+						</StatCard.StatCard>
 					{/await}
 				{/if}
 
-				<!-- Device Breakdown -->
 				{#if Object.keys(deviceBreakdown).length > 0}
-					<div class="bg-card rounded-xl border p-6">
-						<h3 class="text-muted-foreground text-sm font-medium">Device Breakdown</h3>
-						<div class="mt-4 space-y-2">
+					<StatCard.StatCard label="Device Breakdown">
+						<div class="space-y-2">
 							{#each Object.entries(deviceBreakdown).sort(([, a], [, b]) => b - a) as [device, count]}
 								<div class="flex items-center justify-between text-sm">
 									<span>{device}</span>
@@ -173,53 +181,66 @@
 								</div>
 							{/each}
 						</div>
+					</StatCard.StatCard>
+				{/if}
+
+				<!-- PQ (Perceptual Quality) Line Chart -->
+				{#if Object.keys(btScores).length > 0}
+					<div class="bg-card rounded-xl border p-6 md:col-span-2 lg:col-span-3">
+						<PqLineChart scores={btScores} />
+					</div>
+				{/if}
+
+				<!-- FLAC vs Lossy Transparency -->
+				{#if Object.keys(flacVsLossy).length > 0}
+					<div class="bg-card rounded-xl border p-6 md:col-span-2">
+						<FlacVsLossyChart data={flacVsLossy} />
+					</div>
+				{/if}
+
+				<!-- Neither by Bitrate Difference -->
+				{#if Object.keys(neitherByBitrateDiff).length > 0}
+					<div class="bg-card rounded-xl border p-6">
+						<NeitherByDiffChart data={neitherByBitrateDiff} />
 					</div>
 				{/if}
 			</div>
 
-			<!-- Codec Descriptions -->
-			<div class="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-				{#each codecs as codec}
-					<div class="bg-card rounded-lg border p-4">
-						<h4 class="font-medium">{codec}</h4>
-						<p class="text-muted-foreground mt-1 text-xs">
-							{codecDescriptions[codec]}
-						</p>
-					</div>
-				{/each}
-			</div>
+			<CodecDescriptions
+				codecs={codecs}
+				descriptions={codecDescriptions}
+				class="mt-12"
+			/>
 		{:else}
-			<div class="mx-auto max-w-md py-20 text-center">
-				<div
-					class="bg-muted mx-auto mb-6 flex size-16 items-center justify-center rounded-full"
-				>
-					<span class="text-2xl">🎧</span>
-				</div>
-				<h2 class="text-2xl font-bold">Not enough data yet</h2>
-				<p class="text-muted-foreground mt-3 text-sm">
-					We need more listening data before we can show meaningful visualizations. Every
-					comparison you complete helps us build a clearer picture of how audio codecs are
-					perceived.
-				</p>
-				<a
-					href="/survey/setup"
-					class="bg-primary text-primary-foreground hover:bg-primary/90 mt-6 inline-flex items-center rounded-lg px-6 py-3 text-sm font-medium shadow-sm transition-colors"
-				>
-					Be one of the first to contribute
-				</a>
+			<div class="mx-auto max-w-md py-20">
+				<Empty.Empty>
+					<Empty.Media variant="icon">
+						<span class="text-2xl">🎧</span>
+					</Empty.Media>
+					<Empty.Header>
+						<Empty.Title>Not enough data yet</Empty.Title>
+						<Empty.Description>
+							We need more listening data before we can show meaningful visualizations.
+							Every comparison you complete helps us build a clearer picture of how audio
+							codecs are perceived.
+						</Empty.Description>
+					</Empty.Header>
+					<Empty.Content>
+						<a
+							href="/survey/setup"
+							class="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center rounded-lg px-6 py-3 text-sm font-medium shadow-sm transition-colors"
+						>
+							Be one of the first to contribute
+						</a>
+					</Empty.Content>
+				</Empty.Empty>
 			</div>
 
-			<!-- Still show codec descriptions even without data -->
-			<div class="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-				{#each codecs as codec}
-					<div class="bg-card rounded-lg border p-4">
-						<h4 class="font-medium">{codec}</h4>
-						<p class="text-muted-foreground mt-1 text-xs">
-							{codecDescriptions[codec]}
-						</p>
-					</div>
-				{/each}
-			</div>
+			<CodecDescriptions
+				codecs={codecs}
+				descriptions={codecDescriptions}
+				class="mt-8"
+			/>
 		{/if}
 	</SectionContent>
 </Section>

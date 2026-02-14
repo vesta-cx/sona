@@ -1,8 +1,13 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { Root as Header, Logo as HeaderLogo } from '@vesta-cx/ui/components/layout/header';
+	import {
+		Root as Header,
+		Logo as HeaderLogo,
+		Actions as HeaderActions
+	} from '@vesta-cx/ui/components/layout/header';
 	import { Main } from '@vesta-cx/ui/components/layout/main';
 	import { CookieConsentDialog } from '@vesta-cx/ui/components/utils/cookie-consent-dialog';
+	import { ThemeSwitcher } from '@vesta-cx/ui/components/utils/theme-switcher';
 	import type { VendorDefinition } from '@vesta-cx/utils/cookies';
 	import VestaFooter from './footer.svelte';
 
@@ -25,6 +30,9 @@
 		<HeaderLogo class="flex items-center gap-2">
 			<a href="/" class="text-sm font-bold tracking-tight">Quality Survey</a>
 		</HeaderLogo>
+		<HeaderActions>
+			<ThemeSwitcher.Root variant="dropdown" />
+		</HeaderActions>
 	</Header>
 {/if}
 
